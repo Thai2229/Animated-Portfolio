@@ -49,6 +49,7 @@ export type ValleyScene = {
   update: (time: number) => void;
   setCamera: (p: THREE.Vector3) => void;
   setReduced: (reduced: boolean) => void;
+  crown: THREE.InstancedMesh;
 };
 
 export function createValley(world: WorldData, profile: Profile): ValleyScene {
@@ -226,5 +227,5 @@ export function createValley(world: WorldData, profile: Profile): ValleyScene {
   const setReduced = (reduced: boolean) => {
     shared.uMotion.value = Number(!reduced);
   };
-  return { group, heightAt, update, setCamera: grass.setCamera, setReduced };
+  return { group, heightAt, update, setCamera: grass.setCamera, setReduced, crown: cm };
 }

@@ -6,6 +6,8 @@ import * as THREE from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { createValley } from './buildScene';
+import { createStorm, type Storm } from './storm';
+import { createStormFx, treesInView } from './stormFx';
 import { buildSects, type SectBuild } from './architecture';
 import { flyPose, type Pose, type Vec3 } from './cameraPath';
 import { HOME, LABEL_UP, sectPose, fovFor, offA } from './poses';
@@ -16,6 +18,8 @@ import { SECTS } from '../content/sects';
 
 const GOLD = new THREE.Color('#e0b36a');
 const FLY_SECONDS = 1.7;
+const STORM_SKY = new THREE.Color('#3c4652');
+const FLASH_TINT = new THREE.Color('#c8d4ff');
 
 type Props = {
   world: WorldData;
@@ -149,9 +153,95 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
     invalidate();
   }, [valley, reduced, invalidate]);
 
+  // storm: clouds, lightning, a burning pine; ?storm=now starts the first one after ~3 s (client only)
+  const hemi = useRef<THREE.HemisphereLight>(null);
+  const sun = useRef<THREE.DirectionalLight>(null);
+  const fx = useMemo(() => createStormFx(world, profile, valley.crown), [world, profile, valley]);
+  const testStorm = useMemo(() => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('storm') === 'now', []);
+  // created in an effect so the random seed never runs during render; ?storm=now keeps a fixed seed
+  const stormRef = useRef<Storm | null>(null);
+  useEffect(() => {
+    const cam = new THREE.PerspectiveCamera(fovFor(size.width / size.height), size.width / size.height, 0.3, 400);
+    cam.position.set(...(HOME.position as Vec3));
+    cam.lookAt(...(HOME.target as Vec3));
+    const o = { treeCount: world.treeCount, enabled: !reduced, firstGap: undefined as number | undefined, candidates: treesInView(world, cam, 0.7) };
+    let seed = 2024;
+    if (testStorm) o.firstGap = 3;
+    if (!testStorm) seed = Math.floor(Math.random() * 2147483647);
+    stormRef.current = createStorm(seed, o);
+    return () => {
+      stormRef.current = null;
+    };
+    // the view only seeds the candidate list; a later resize does not need a new storm
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [world, reduced, testStorm]);
+  const skip = useRef(0);
+  const seekStrike = useRef(false);
+  const skyBase = useMemo(() => ({ bg: new THREE.Color(), fog: new THREE.Color(), have: false }), []);
+  useEffect(() => {
+    if (!testStorm) return;
+    // debug hook for screenshots: jump the storm clock, or park the camera next to the struck tree
+    const w = window as unknown as { __stormSeek?: (s: number) => void; __stormLook?: () => void; __stormStrike?: () => void; __stormFreeze?: boolean; __stormState?: unknown };
+    w.__stormSeek = (s) => {
+      skip.current += s;
+    };
+    w.__stormStrike = () => {
+      seekStrike.current = true;
+    };
+    w.__stormLook = () => {
+      const p = fx.treeTop;
+      cur.current = { position: [p.x - 1.6, p.y + 0.9, p.z - 2.6], target: [p.x, p.y - 0.2, p.z] };
+      anim.current = null;
+    };
+    return () => {
+      delete w.__stormSeek;
+      delete w.__stormLook;
+      delete w.__stormStrike;
+      delete w.__stormState;
+    };
+  }, [testStorm, fx]);
+  useEffect(() => {
+    scene.add(fx.group);
+    return () => {
+      scene.remove(fx.group);
+      fx.dispose();
+    };
+  }, [scene, fx]);
+
   useFrame(({ clock }, dt) => {
     const t = clock.elapsedTime;
     if (!reduced) valley.update(t);
+
+    const w = window as unknown as { __stormFreeze?: boolean; __stormState?: unknown };
+    let sdt = Math.min(dt, 0.25);
+    if (testStorm && w.__stormFreeze) sdt = 0;
+    const storm = stormRef.current;
+    if (storm) {
+      let ss = storm.step(sdt + skip.current);
+      skip.current = 0;
+      // debug: advance in 0.05 s steps until a strike has just started
+      for (let i = 0; seekStrike.current && i < 2000; i++) {
+        ss = storm.step(0.05);
+        if (ss.strike) seekStrike.current = false;
+      }
+      seekStrike.current = false;
+      if (testStorm) w.__stormState = ss;
+      fx.update(ss, t, (size.height * gl.getPixelRatio()) / (2 * Math.tan(((camera as THREE.PerspectiveCamera).fov * Math.PI) / 360)));
+      if (hemi.current && sun.current && scene.background instanceof THREE.Color && scene.fog) {
+        if (!skyBase.have) {
+          skyBase.bg.copy(scene.background);
+          skyBase.fog.copy(scene.fog.color);
+          skyBase.have = true;
+        }
+        // cloud 0 restores the exact base values; the flash only lifts the hemisphere light
+        hemi.current.intensity = 1.15 * (1 - 0.45 * ss.cloud) + ss.flash * 1.4;
+        sun.current.intensity = 3.0 * (1 - 0.75 * ss.cloud);
+        // the terrain albedo has its lighting baked in, so the storm's darkening goes through exposure (1 when clear)
+        gl.toneMappingExposure = 1 - 0.4 * ss.cloud + ss.flash * 0.6;
+        scene.background.copy(skyBase.bg).lerp(STORM_SKY, ss.cloud * 0.75).lerp(FLASH_TINT, ss.flash * 0.3);
+        scene.fog.color.copy(skyBase.fog).lerp(STORM_SKY, ss.cloud * 0.75).lerp(FLASH_TINT, ss.flash * 0.3);
+      }
+    }
 
     // camera: eased fly between poses, plus a slow drift while idle at home
     if (anim.current) {
@@ -220,8 +310,9 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
 
   return (
     <>
-      <hemisphereLight args={['#e4ecf4', '#5d5848', 1.15]} />
+      <hemisphereLight ref={hemi} args={['#e4ecf4', '#5d5848', 1.15]} />
       <directionalLight
+        ref={sun}
         position={sunPos}
         target={sunTarget}
         intensity={3.0}
