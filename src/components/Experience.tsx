@@ -1,7 +1,6 @@
 'use client';
 
 import { Component, useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import Link from 'next/link';
 import { Canvas } from '@react-three/fiber';
 import { PerformanceMonitor } from '@react-three/drei';
 import { Scene } from '../scene/Scene';
@@ -178,7 +177,6 @@ export function Experience() {
           <nav aria-label="Primary">
             <button type="button" onClick={close}>Sects</button>
             <button type="button" onClick={() => select(SECTS[0].slug)}>Path</button>
-            <Link href="/about">About</Link>
           </nav>
         </header>
 
@@ -187,7 +185,6 @@ export function Experience() {
             <h1>Three sects,<br />three things I built.</h1>
             <p>Each sect in this valley guards one of my projects. Pick one to descend into it and open the live site.</p>
           </div>
-          <div className="compass">Falls of the Jade Dragon · 412 m drop<br />N ↑ · 1 : 25,000</div>
         </div>
 
         <div className="labels" data-hidden={labelsHidden}>
