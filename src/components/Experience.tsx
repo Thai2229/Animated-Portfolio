@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { Component, useCallback, useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import Link from 'next/link';
 import { Canvas } from '@react-three/fiber';
 import { PerformanceMonitor } from '@react-three/drei';
@@ -12,13 +12,48 @@ import { useWorld } from './useWorld';
 import { Panel } from './Panel';
 import { ProjectLinks } from './ProjectLinks';
 
-const subscribeMedia = (q: string) => (cb: () => void) => {
-  const m = window.matchMedia(q);
-  m.addEventListener('change', cb);
-  return () => m.removeEventListener('change', cb);
+const mediaSubs = new Map<string, (cb: () => void) => () => void>();
+const subscribeMedia = (q: string) => {
+  let sub = mediaSubs.get(q);
+  if (!sub) {
+    sub = (cb) => {
+      const m = window.matchMedia(q);
+      m.addEventListener('change', cb);
+      return () => m.removeEventListener('change', cb);
+    };
+    mediaSubs.set(q, sub);
+  }
+  return sub;
 };
 function useMedia(q: string) {
   return useSyncExternalStore(subscribeMedia(q), () => window.matchMedia(q).matches, () => false);
+}
+
+let glOk: boolean | null = null;
+function hasWebGL() {
+  if (glOk === null) glOk = probeWebGL();
+  return glOk;
+}
+function probeWebGL() {
+  const c = document.createElement('canvas');
+  const gl = c.getContext('webgl2') || c.getContext('webgl');
+  if (!gl) return false;
+  gl.getExtension('WEBGL_lose_context')?.loseContext();
+  return true;
+}
+
+class CanvasBoundary extends Component<{ onFail: () => void; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch() {
+    this.props.onFail();
+  }
+  render() {
+    if (this.state.failed) return null;
+    return this.props.children;
+  }
 }
 
 let cachedProfile: Profile | null = null;
@@ -37,11 +72,19 @@ export function Experience() {
   const [hovered, setHovered] = useState<string | null>(null);
   const [ready, setReady] = useState(false);
   const [dpr, setDpr] = useState(1.5);
+  const [noGL, setNoGL] = useState(false);
+  const noWebGL = useSyncExternalStore(noopSubscribe, () => !hasWebGL(), () => false);
+  const failGL = useCallback(() => setNoGL(true), []);
   const labelRefs = useRef<(HTMLElement | null)[]>([]);
   const opener = useRef<HTMLElement | null>(null);
   const activeSect = SECTS.find((s) => s.slug === active);
 
+  const activeRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeRef.current = active;
+  }, [active]);
   const select = useCallback((slug: string) => {
+    if (activeRef.current !== null) return;
     opener.current = document.activeElement as HTMLElement | null;
     setHovered(null);
     setActive(slug);
@@ -84,7 +127,8 @@ export function Experience() {
   let stage = 'Raising the valley';
   if (world.status === 'loading') stage = world.stage;
   if (world.status === 'ready') stage = 'Lighting the lanterns';
-  const showLoader = world.status !== 'error' && !ready;
+  const failed = world.status === 'error' || noGL || noWebGL;
+  const showLoader = !failed && !ready;
   const labelsHidden = active !== null || !ready;
   let frameloop: 'always' | 'demand' = 'always';
   if (reduced) {
@@ -93,14 +137,16 @@ export function Experience() {
 
   return (
     <>
-      <div className="stage" role="img" aria-label="Illustrated mountain valley with three sects, one for each project">
-        {world.status === 'ready' && profile && (
+      <div className="stage" inert={active !== null} role="img" aria-label="Illustrated mountain valley with three sects, one for each project">
+        {world.status === 'ready' && profile && !noGL && !noWebGL && (
+          <CanvasBoundary onFail={failGL}>
           <Canvas
             frameloop={frameloop}
             shadows="soft"
             dpr={dpr}
             camera={{ fov: 36, near: 0.3, far: 400, position: HOME.position }}
             gl={{ antialias: true }}
+            onCreated={({ gl }) => gl.domElement.addEventListener('webglcontextlost', failGL)}
           >
             <color attach="background" args={['#a9b8c4']} />
             <fog attach="fog" args={['#a8b8c6', 48, 135]} />
@@ -118,6 +164,7 @@ export function Experience() {
               onReady={onReady}
             />
           </Canvas>
+          </CanvasBoundary>
         )}
       </div>
       <div className="vignette" />
@@ -173,7 +220,7 @@ export function Experience() {
 
       {activeSect && <Panel sect={activeSect} onClose={close} />}
 
-      {world.status === 'error' && (
+      {failed && (
         <div className="fallback" role="alert">
           <h2>The valley could not be raised here.</h2>
           <p>Your browser could not run the 3D scene. The projects are still a click away.</p>

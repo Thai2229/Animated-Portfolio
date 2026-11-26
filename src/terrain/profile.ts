@@ -13,12 +13,29 @@ export const PROFILES: Record<'high' | 'low', Profile> = {
   low: { name: 'low', n: 512, worldSize: 120, droplets: 150000, trees: 9000, tex: 1024, shadowMap: 2048 },
 };
 
-// Reduced quality on small screens or weak CPUs; ?quality=low|high overrides.
-export function pickProfile(): Profile {
-  const q = new URLSearchParams(window.location.search).get('quality');
-  if (q === 'low' || q === 'high') return PROFILES[q];
-  const small = window.matchMedia('(max-width: 899px)').matches;
-  const weak = (navigator.hardwareConcurrency || 4) <= 4;
-  if (small || weak) return PROFILES.low;
+export type ProfileInput = {
+  width: number;
+  cores: number;
+  coarsePointer: boolean;
+  deviceMemory: number | undefined;
+  queryOverride: string | null;
+};
+
+// Reduced quality on small screens, touch devices or weak hardware; ?quality=low|high overrides.
+export function chooseProfile(i: ProfileInput): Profile {
+  if (i.queryOverride === 'low' || i.queryOverride === 'high') return PROFILES[i.queryOverride];
+  if (i.width <= 899 || i.cores <= 4 || i.coarsePointer || (i.deviceMemory !== undefined && i.deviceMemory <= 4)) {
+    return PROFILES.low;
+  }
   return PROFILES.high;
+}
+
+export function pickProfile(): Profile {
+  return chooseProfile({
+    width: window.innerWidth,
+    cores: navigator.hardwareConcurrency || 4,
+    coarsePointer: window.matchMedia('(pointer: coarse)').matches,
+    deviceMemory: (navigator as Navigator & { deviceMemory?: number }).deviceMemory,
+    queryOverride: new URLSearchParams(window.location.search).get('quality'),
+  });
 }

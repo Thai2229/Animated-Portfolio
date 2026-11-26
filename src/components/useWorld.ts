@@ -13,7 +13,13 @@ export function useWorld(profile: Profile | null): WorldState {
   useEffect(() => {
     if (!profile) return;
     const started = performance.now();
-    const worker = new Worker(new URL('../terrain/worker.ts', import.meta.url), { type: 'module' });
+    let worker: Worker;
+    try {
+      worker = new Worker(new URL('../terrain/worker.ts', import.meta.url), { type: 'module' });
+    } catch (err) {
+      queueMicrotask(() => setState({ status: 'error', message: String(err) }));
+      return;
+    }
     worker.onmessage = (e: MessageEvent) => {
       const m = e.data;
       if (m.type === 'progress') {
@@ -24,9 +30,13 @@ export function useWorld(profile: Profile | null): WorldState {
         worker.terminate();
       } else {
         setState({ status: 'error', message: m.message });
+        worker.terminate();
       }
     };
-    worker.onerror = (e) => setState({ status: 'error', message: e.message });
+    worker.onerror = (e) => {
+      setState({ status: 'error', message: e.message });
+      worker.terminate();
+    };
     worker.postMessage(profile);
     return () => worker.terminate();
   }, [profile]);
