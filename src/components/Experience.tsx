@@ -179,7 +179,6 @@ export function Experience() {
             <button type="button" onClick={close}>Sects</button>
             <button type="button" onClick={() => select(SECTS[0].slug)}>Path</button>
             <Link href="/about">About</Link>
-            <Link href="/resume">Résumé</Link>
           </nav>
         </header>
 

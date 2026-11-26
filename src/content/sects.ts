@@ -12,7 +12,7 @@ export type Sect = {
   description: string;
   stack: string[];
   liveUrl: string;
-  githubUrl?: string;
+  githubUrl: string;
 };
 
 export const SECTS: Sect[] = [
@@ -29,6 +29,7 @@ export const SECTS: Sect[] = [
       'Load tested with k6: 1.7 ms p95 at 2,000 redirects per second, and 37.5 ms p95 at 6,000 redirects per second with zero errors.',
     stack: ['TypeScript', 'Fastify', 'PostgreSQL', 'Redis', 'Docker'],
     liveUrl: 'https://veryshrt.vercel.app',
+    githubUrl: 'https://github.com/Thai2229/URL-Shortener',
   },
   {
     slug: 'productivity-app',
@@ -43,6 +44,7 @@ export const SECTS: Sect[] = [
       'A Pomodoro timer, job tracker, habit tracker and skill roadmaps. Sign in with Google OAuth 2.0 or email verification codes, with Cloudflare Turnstile guarding the forms.',
     stack: ['React', 'TypeScript', 'Express', 'PostgreSQL', 'Prisma'],
     liveUrl: 'https://productivityappthai.vercel.app',
+    githubUrl: 'https://github.com/Thai2229/Productivity-App',
   },
   {
     slug: 'physics-engine',
@@ -57,5 +59,6 @@ export const SECTS: Sect[] = [
       'Compiled to WebAssembly and shown in a Next.js demo: a robotic arm, a double pendulum, Newton’s cradle, a rope bridge and a live energy chart.',
     stack: ['C++', 'WebAssembly', 'Next.js'],
     liveUrl: 'https://physicsenginethai.vercel.app',
+    githubUrl: 'https://github.com/Thai2229/Physics-Engine',
   },
 ];

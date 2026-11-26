@@ -41,9 +41,7 @@ export function Panel({ sect, onClose }: { sect: Sect; onClose: () => void }) {
       </ul>
       <div className="actions">
         <a className="primary" href={sect.liveUrl} target="_blank" rel="noopener noreferrer">Open live site ↗</a>
-        {sect.githubUrl && (
-          <a className="secondary" href={sect.githubUrl} target="_blank" rel="noopener noreferrer">GitHub ↗</a>
-        )}
+        <a className="secondary" href={sect.githubUrl} target="_blank" rel="noopener noreferrer">GitHub ↗</a>
       </div>
     </aside>
   );

@@ -2,6 +2,7 @@
   "name": "animated-portfolio",
   "private": true,
   "type": "module",
+  "engines": { "node": "22.x" },
   "scripts": {
     "test": "vitest run",
     "dev": "next dev",

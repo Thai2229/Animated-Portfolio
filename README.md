@@ -14,7 +14,7 @@ npm run lint
 npm test
 ```
 
-Node 22 or newer.
+Node 22.
 
 ## How it works
 
@@ -22,7 +22,15 @@ Node 22 or newer.
 - Small screens (under 900px) and machines with 4 or fewer cores get a reduced profile (512 grid, fewer droplets and trees, smaller textures and shadow map). Add `?quality=low` or `?quality=high` to force one.
 - `prefers-reduced-motion` turns off the camera drift and animated water, and renders on demand (camera moves are instant).
 - `src/scene/` holds the buildings, camera path (`flyPose`) and the R3F scene. Labels are HTML buttons projected from each sect's 3D position.
-- Project text lives in `src/content/sects.ts`. `githubUrl` is left empty until the repository links are confirmed.
+- Project text lives in `src/content/sects.ts`. Each sect has a `githubUrl`.
+
+## Deploy on Vercel
+
+1. Import the GitHub repository at https://vercel.com/new. The framework (Next.js) is detected automatically.
+2. No environment variables are needed. Metadata URLs come from the `VERCEL_*` variables Vercel sets.
+3. Set the production branch to `main` (or the branch you prefer). Every other branch gets a preview deployment.
+
+Add `?quality=low` or `?quality=high` to the URL to override the automatic quality profile.
 
 ## Notes
 

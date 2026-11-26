@@ -58,11 +58,9 @@ describe('SECTS', () => {
     expect(s?.sectName).toBe('Heavenly Balance Temple');
   });
 
-  it('has github urls on github.com when present', () => {
+  it('has a github url under github.com/Thai2229/ on every sect', () => {
     for (const s of SECTS) {
-      if (s.githubUrl !== undefined) {
-        expect(s.githubUrl.startsWith('https://github.com/')).toBe(true);
-      }
+      expect(s.githubUrl?.startsWith('https://github.com/Thai2229/')).toBe(true);
     }
   });
 });
