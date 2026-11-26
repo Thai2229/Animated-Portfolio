@@ -232,11 +232,15 @@ export function createPool(center: THREE.Vector3, size: number, shared: Shared) 
   return mesh;
 }
 
-// ---- river overlay from the plunge pool to the lake: uv.x across, uv.y = distance along the flow
+// ---- river / stream overlay: uv.x across, uv.y = distance along the flow. The stream variant has a body colour,
+// flows faster and foams up over the last few units before the lip.
 const RIVER_FRAG = /* glsl */ `
 #include <common>
 #include <fog_pars_fragment>
 uniform float uTime;
+uniform float uBody;
+uniform float uSpeed;
+uniform float uLen;
 varying vec2 vUv;
 varying vec3 vWP;
 ${NOISE_GLSL}
@@ -244,22 +248,32 @@ void main() {
   float u = vUv.x;
   float y = vUv.y;
   float edge = min(u, 1.0 - u);
-  float s1 = vnoise(vec2(u * 6.0, y * 0.9 - uTime * 1.2));
-  float s2 = vnoise(vec2(u * 15.0 + y * 0.3, y * 2.4 - uTime * 2.0));
+  float s1 = vnoise(vec2(u * 6.0, y * 0.9 - uTime * 1.2 * uSpeed));
+  float s2 = vnoise(vec2(u * 15.0 + y * 0.3, y * 2.4 - uTime * 2.0 * uSpeed));
   float chev = smoothstep(0.55, 0.9, s1 * 0.6 + s2 * 0.5);
   float outflow = 1.0 - smoothstep(0.0, 4.0, y);
+  float near = smoothstep(uLen - 5.0, uLen, y);
   float a = (0.07 + 0.34 * chev + 0.45 * outflow * smoothstep(0.3, 0.7, s2)) * smoothstep(0.0, 0.3, edge);
+  a += near * 0.5 * smoothstep(0.35, 0.7, s2) * smoothstep(0.0, 0.2, edge);
+  float body = uBody * smoothstep(0.0, 0.22, edge) * smoothstep(0.0, 2.5, y);
   vec2 cell = floor(vec2(u * 18.0, y * 5.0));
   float r = hash21(cell);
   float sp = step(0.94, r) * pow(0.5 + 0.5 * sin(uTime * 4.0 + r * 60.0), 8.0) * smoothstep(0.3, 0.0, length(fract(vec2(u * 18.0, y * 5.0)) - 0.5));
-  gl_FragColor = vec4(vec3(0.88, 0.95, 1.0), clamp(a + sp, 0.0, 0.9));
+  float white = clamp(chev * 1.1 + near * smoothstep(0.3, 0.7, s2), 0.0, 1.0);
+  vec3 col = mix(vec3(0.2, 0.4, 0.46), vec3(0.9, 0.96, 1.0), mix(1.0, white, uBody));
+  gl_FragColor = vec4(col, clamp(max(a, body * 0.85) + sp, 0.0, 0.92));
   #include <fog_fragment>
 }
 `;
 
-export function createRiver(path: THREE.Vector3[], width: number, shared: Shared) {
+type RiverOpts = { yAt?: (s: number) => number; body?: number; speed?: number };
+
+// path runs upstream to downstream; widthAt and yAt take the distance upstream of the end of the path
+export function createRiver(path: THREE.Vector3[], widthAt: (s: number) => number, shared: Shared, opts: RiverOpts = {}) {
   const curve = new THREE.CatmullRomCurve3(path);
-  const pts = curve.getPoints(80);
+  const pts = curve.getPoints(120);
+  let total = 0;
+  for (let i = 1; i < pts.length; i++) total += pts[i].distanceTo(pts[i - 1]);
   const p: number[] = [];
   const uv: number[] = [];
   const idx: number[] = [];
@@ -267,9 +281,12 @@ export function createRiver(path: THREE.Vector3[], width: number, shared: Shared
   pts.forEach((pt, i) => {
     if (i > 0) len += pt.distanceTo(pts[i - 1]);
     const tan = curve.getTangent(i / (pts.length - 1));
-    const sx = -tan.z * width * 0.5;
-    const sz = tan.x * width * 0.5;
-    p.push(pt.x - sx, WATER_Y + 0.03, pt.z - sz, pt.x + sx, WATER_Y + 0.03, pt.z + sz);
+    const half = widthAt(total - len) * 0.5;
+    const sx = -tan.z * half;
+    const sz = tan.x * half;
+    let y = WATER_Y + 0.03;
+    if (opts.yAt) y = opts.yAt(total - len);
+    p.push(pt.x - sx, y, pt.z - sz, pt.x + sx, y, pt.z + sz);
     uv.push(0, len, 1, len);
     if (i < pts.length - 1) idx.push(i * 2, i * 2 + 1, i * 2 + 2, i * 2 + 1, i * 2 + 3, i * 2 + 2);
   });
@@ -277,7 +294,14 @@ export function createRiver(path: THREE.Vector3[], width: number, shared: Shared
   geo.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
   geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   geo.setIndex(idx);
-  const mesh = new THREE.Mesh(geo, shaderMat(RIVER_FRAG, shared, {}));
+  let uLen = 1e9;
+  if (opts.body) uLen = total;
+  const mat = shaderMat(RIVER_FRAG, shared, {
+    uBody: { value: opts.body ?? 0 },
+    uSpeed: { value: opts.speed ?? 1 },
+    uLen: { value: uLen },
+  });
+  const mesh = new THREE.Mesh(geo, mat);
   mesh.renderOrder = 1;
   return mesh;
 }

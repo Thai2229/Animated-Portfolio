@@ -1,8 +1,8 @@
 // Everything heavy and pure: heightfield, baked shadows, albedo texture and tree placement.
 import { createNoise } from './noise';
-import { generateHeightfield, makeHeightAt, polyDist } from './heightfield';
+import { generateHeightfield, makeHeightAt, polyDist, polyNearest } from './heightfield';
 import { bakeShadows } from './bake';
-import { A2W, W2A, SITES, SUN_DIR, RIVER, PATH_ALL } from './layout';
+import { A2W, W2A, SITES, SUN_DIR, RIVER, PATH_ALL, FEEDER, streamWidth } from './layout';
 import { grassAmount, scatterGrass } from './grass';
 import { makeRockTextures } from './rock';
 import type { Profile } from './profile';
@@ -97,6 +97,12 @@ export function buildWorld(profile: Profile, report: (stage: string, fraction: n
     return [-dX / l, 1 / l, -dZ / l];
   };
 
+  // distance from the stream's banks (negative inside), so no grass or trees grow in the channel
+  const streamGap = (a: number, b: number) => {
+    const st = polyNearest(a, b, FEEDER);
+    return st.d - streamWidth(st.s) / 2 - 0.8;
+  };
+
   // where grass grows: flat, dry, clear of courtyards and paths (also drives the blades)
   const GRASS = new Float32Array(n * n);
   for (let y = 1; y < n - 1; y++) {
@@ -109,7 +115,7 @@ export function buildWorld(profile: Profile, report: (stage: string, fraction: n
       const { a, b } = W2A(((x / (n - 1)) - 0.5) * worldSize, ((y / (n - 1)) - 0.5) * worldSize);
       let siteK = 9;
       for (const k of [SITES.ledge, SITES.valley, SITES.lake]) siteK = Math.min(siteK, Math.hypot(a - k.a, b - k.b) / k.r);
-      GRASS[i] = grassAmount({ ny, h, siteK, pathD: polyDist(a, b, PATH_ALL) });
+      GRASS[i] = grassAmount({ ny, h, siteK, pathD: Math.min(polyDist(a, b, PATH_ALL), streamGap(a, b)) });
     }
   }
   const grassAt = (fx: number, fy: number) => {
@@ -227,7 +233,7 @@ export function buildWorld(profile: Profile, report: (stage: string, fraction: n
       if (s === V) pad = -0.2;
       if (Math.hypot(a - s.a, b - s.b) < s.r + pad) blocked = true;
     }
-    if (blocked || polyDist(a, b, PATH_ALL) < 0.7 || polyDist(a, b, RIVER) < 2) continue;
+    if (blocked || polyDist(a, b, PATH_ALL) < 0.7 || polyDist(a, b, RIVER) < 2 || streamGap(a, b) < 0.4) continue;
     const h = hAtW(w.x, w.z);
     if (h < 0.5) continue;
     const s = 0.26 + rnd() * 0.3;

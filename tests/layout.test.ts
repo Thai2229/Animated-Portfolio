@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { A2W, W2A, WATER_Y, SITES } from '@/terrain/layout';
+import { A2W, W2A, WATER_Y, SITES, FALL_SCALE, FALL_TOP, FEEDER, streamWidth, streamBed } from '@/terrain/layout';
 
 describe('layout', () => {
   it('W2A inverts A2W', () => {
@@ -43,5 +43,17 @@ describe('layout', () => {
     expect(SITES.ledge).toMatchObject({ a: 16, b: 15.5, r: 4.6 });
     expect(SITES.valley).toMatchObject({ a: -15, b: 8, r: 4.8 });
     expect(SITES.lake).toMatchObject({ a: 7.8, b: -6.5, r: 4.6 });
+  });
+
+  it('stream: flares at the lip, narrows just above it, then widens slowly; bed climbs upstream', () => {
+    expect(FALL_SCALE).toBeGreaterThanOrEqual(1.5);
+    expect(FALL_SCALE).toBeLessThanOrEqual(2);
+    expect(streamWidth(0)).toBeCloseTo(2.6 * FALL_SCALE, 6);
+    expect(streamWidth(2.5)).toBeLessThan(streamWidth(0));
+    expect(streamWidth(15)).toBeGreaterThan(streamWidth(2.5));
+    expect(streamBed(0)).toBeLessThan(FALL_TOP.h);
+    expect(streamBed(10)).toBeGreaterThan(streamBed(0));
+    expect(FEEDER[0]).toEqual([FALL_TOP.a, FALL_TOP.b]);
+    expect(FEEDER.length).toBeGreaterThan(4);
   });
 });

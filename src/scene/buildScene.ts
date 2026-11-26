@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { createNoise } from '../terrain/noise';
 import { makeHeightAt } from '../terrain/heightfield';
-import { A2W, WATER_Y, FALL_TOP, FALL_BASE, PATH_MAIN, PATH_BRANCH, RIVER } from '../terrain/layout';
+import { A2W, WATER_Y, FALL_TOP, FALL_BASE, PATH_MAIN, PATH_BRANCH, RIVER, FEEDER, FALL_SCALE, streamWidth, streamBed } from '../terrain/layout';
 import type { WorldData } from '../terrain/world';
 import type { Profile } from '../terrain/profile';
 import { makeTerrainMaterial } from './rockMaterial';
@@ -127,7 +127,7 @@ export function createValley(world: WorldData, profile: Profile): ValleyScene {
     const uv: number[] = [];
     const idx: number[] = [];
     pts.forEach((pt, i) => {
-      const ww = w * (1 + (i / m) * 0.35);
+      const ww = w * FALL_SCALE * (1 + (i / m) * 0.35);
       p.push(pt.x - (side.x * ww) / 2, pt.y, pt.z - (side.z * ww) / 2, pt.x + (side.x * ww) / 2, pt.y, pt.z + (side.z * ww) / 2);
       uv.push(0, i / m, 1, i / m);
       if (i < m) {
@@ -148,14 +148,20 @@ export function createValley(world: WorldData, profile: Profile): ValleyScene {
   const lip = new THREE.Vector3(top.x, FALL_TOP.h + 0.3, top.z);
   const mistAt = impact.clone().lerp(new THREE.Vector3(base.x, WATER_Y, base.z), 0.3);
   const fx = profile.fx;
-  group.add(createBillboards({ kind: 'SPRAY', count: Math.round(900 * fx), origin: impact, side, dir, spread: 2.2, seed: 21 }, shared));
-  group.add(createBillboards({ kind: 'SPRAY', count: Math.round(140 * fx), origin: lip, side, dir, spread: 1.8, seed: 33 }, shared));
-  group.add(createBillboards({ kind: 'MIST', count: Math.round(70 * fx) + 20, origin: mistAt, side, dir, spread: 2.4, seed: 57 }, shared));
-  group.add(createPool(impact, 7, shared));
+  group.add(createBillboards({ kind: 'SPRAY', count: Math.round(1400 * fx), origin: impact, side, dir, spread: 2.2 * FALL_SCALE, seed: 21 }, shared));
+  group.add(createBillboards({ kind: 'SPRAY', count: Math.round(220 * fx), origin: lip, side, dir, spread: 1.8 * FALL_SCALE, seed: 33 }, shared));
+  group.add(createBillboards({ kind: 'MIST', count: Math.round(90 * fx) + 20, origin: mistAt, side, dir, spread: 2.4 * FALL_SCALE, seed: 57 }, shared));
+  group.add(createPool(impact, 7 * FALL_SCALE, shared));
   group.add(createRiver(RIVER.map(([a, b]) => {
     const w = A2W(a, b);
     return new THREE.Vector3(w.x, WATER_Y, w.z);
-  }), 2.6, shared));
+  }), () => 2.6, shared));
+  // the stream from the massif down to the lip, laid on its carved bed
+  const streamPath = FEEDER.map(([a, b]) => {
+    const w = A2W(a, b);
+    return new THREE.Vector3(w.x, WATER_Y, w.z);
+  }).reverse();
+  group.add(createRiver(streamPath, streamWidth, shared, { yAt: (s) => streamBed(s) + 0.18, body: 1, speed: 2.2 }));
 
   // grass blades on the grass mask
   const grass = createGrass(world, ground, shared);
