@@ -12,6 +12,7 @@ ctx.onmessage = (e) => {
     const world = buildWorld(e.data, (stage, f) => ctx.postMessage({ type: 'progress', stage, f }));
     ctx.postMessage({ type: 'done', world }, [
       world.heights.buffer, world.albedo.buffer, world.treeMatrices.buffer, world.treeHsl.buffer,
+      world.rock.buffer, world.rockNoise.buffer, world.grassPos.buffer, world.grassRnd.buffer,
     ]);
   } catch (err) {
     ctx.postMessage({ type: 'error', message: String(err) });

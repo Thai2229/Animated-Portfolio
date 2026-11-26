@@ -32,7 +32,7 @@ type Props = {
 
 export function Scene({ world, profile, hovered, active, mobile, reduced, labelRefs, onHover, onSelect, onReady }: Props) {
   const { gl, scene, camera, size, invalidate } = useThree();
-  const valley = useMemo(() => createValley(world), [world]);
+  const valley = useMemo(() => createValley(world, profile), [world, profile]);
   const sects = useMemo(() => buildSects(valley.heightAt, world.siteHeights), [valley, world]);
   const builds = useMemo<Record<SiteKey, SectBuild>>(() => ({ ledge: sects.ledge, valley: sects.valley, lake: sects.lake }), [sects]);
 
@@ -144,6 +144,11 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
   );
   const v3 = useMemo(() => new THREE.Vector3(), []);
 
+  useEffect(() => {
+    valley.setReduced(reduced);
+    invalidate();
+  }, [valley, reduced, invalidate]);
+
   useFrame(({ clock }, dt) => {
     const t = clock.elapsedTime;
     if (!reduced) valley.update(t);
@@ -174,6 +179,7 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
     cam.position.copy(pos);
     cam.lookAt(tgt);
     cam.updateMatrixWorld();
+    valley.setCamera(cam.position);
 
     // hover glow (emissive on the sect's own materials + ground ring)
     for (const k of Object.keys(builds) as SiteKey[]) {

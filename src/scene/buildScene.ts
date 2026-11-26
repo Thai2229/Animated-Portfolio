@@ -2,8 +2,13 @@
 import * as THREE from 'three';
 import { createNoise } from '../terrain/noise';
 import { makeHeightAt } from '../terrain/heightfield';
-import { A2W, WATER_Y, FALL_TOP, FALL_BASE, PATH_MAIN, PATH_BRANCH } from '../terrain/layout';
+import { A2W, WATER_Y, FALL_TOP, FALL_BASE, PATH_MAIN, PATH_BRANCH, RIVER } from '../terrain/layout';
 import type { WorldData } from '../terrain/world';
+import type { Profile } from '../terrain/profile';
+import { makeTerrainMaterial } from './rockMaterial';
+import { createGrass } from './grass';
+import { makeShared, swayPines } from './wind';
+import { createBillboards, createPool, createRiver, fallMaterial, flowWater } from './water';
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
@@ -38,65 +43,30 @@ function terrainTexture(world: WorldData) {
   return t;
 }
 
-function fallTexture(rnd: () => number) {
-  const c = document.createElement('canvas');
-  c.width = 256;
-  c.height = 512;
-  const g = c.getContext('2d')!;
-  for (let i = 0; i < 260; i++) {
-    const x = rnd() * 256;
-    const w = 1 + rnd() * 4;
-    const a = 0.15 + rnd() * 0.5;
-    const gr = g.createLinearGradient(0, 0, 0, 512);
-    gr.addColorStop(0, `rgba(255,255,255,${a})`);
-    gr.addColorStop(rnd() * 0.6 + 0.3, `rgba(230,240,245,${a * 0.7})`);
-    gr.addColorStop(1, `rgba(255,255,255,${a})`);
-    g.fillStyle = gr;
-    g.fillRect(x, 0, w, 512);
-  }
-  const edge = g.createLinearGradient(0, 0, 256, 0);
-  edge.addColorStop(0, 'rgba(0,0,0,1)');
-  edge.addColorStop(0.12, 'rgba(0,0,0,0)');
-  edge.addColorStop(0.88, 'rgba(0,0,0,0)');
-  edge.addColorStop(1, 'rgba(0,0,0,1)');
-  g.globalCompositeOperation = 'destination-out';
-  g.fillStyle = edge;
-  g.fillRect(0, 0, 256, 512);
-  const t = new THREE.CanvasTexture(c);
-  t.colorSpace = THREE.SRGBColorSpace;
-  return t;
-}
-
-function radialTexture(size: number, stops: [number, string][]) {
-  const c = document.createElement('canvas');
-  c.width = c.height = size;
-  const g = c.getContext('2d')!;
-  const gr = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-  stops.forEach(([o, col]) => gr.addColorStop(o, col));
-  g.fillStyle = gr;
-  g.fillRect(0, 0, size, size);
-  return new THREE.CanvasTexture(c);
-}
-
 export type ValleyScene = {
   group: THREE.Group;
   heightAt: (x: number, z: number) => number;
   update: (time: number) => void;
+  setCamera: (p: THREE.Vector3) => void;
+  setReduced: (reduced: boolean) => void;
 };
 
-export function createValley(world: WorldData): ValleyScene {
+export function createValley(world: WorldData, profile: Profile): ValleyScene {
   const { n, worldSize: SIZE } = world;
   const heightAt = makeHeightAt(world.heights, n, SIZE);
   const rnd = makeRnd(4242);
   const group = new THREE.Group();
   const { simplex2: simplex } = createNoise(7331);
+  const shared = makeShared();
 
   // terrain: baked albedo (lighting included), plus a shadow catcher for realtime shadows
   const geo = new THREE.PlaneGeometry(SIZE, SIZE, n - 1, n - 1).rotateX(-Math.PI / 2);
   const pos = geo.attributes.position;
   for (let i = 0; i < n * n; i++) pos.setY(i, world.heights[i]);
   geo.deleteAttribute('normal');
-  group.add(new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ map: terrainTexture(world), toneMapped: false })));
+  geo.computeVertexNormals();
+  const ground = terrainTexture(world);
+  group.add(new THREE.Mesh(geo, makeTerrainMaterial(ground, world, profile)));
   const catcher = new THREE.Mesh(geo, new THREE.ShadowMaterial({ opacity: 0.34 }));
   catcher.receiveShadow = true;
   catcher.position.y = 0.01;
@@ -124,25 +94,22 @@ export function createValley(world: WorldData): ValleyScene {
   const nt = new THREE.CanvasTexture(nc);
   nt.wrapS = nt.wrapT = THREE.RepeatWrapping;
   nt.repeat.set(26, 26);
-  const water = new THREE.Mesh(
-    new THREE.PlaneGeometry(SIZE, SIZE).rotateX(-Math.PI / 2),
-    new THREE.MeshStandardMaterial({
-      color: '#2d5c63', roughness: 0.12, metalness: 0.15, normalMap: nt,
-      normalScale: new THREE.Vector2(0.35, 0.35), transparent: true, opacity: 0.9, envMapIntensity: 1.4,
-    }),
-  );
+  const waterMat = new THREE.MeshStandardMaterial({
+    color: '#2d5c63', roughness: 0.12, metalness: 0.15, normalMap: nt,
+    normalScale: new THREE.Vector2(0.35, 0.35), transparent: true, opacity: 0.9, envMapIntensity: 1.4,
+  });
+  flowWater(waterMat, shared);
+  const water = new THREE.Mesh(new THREE.PlaneGeometry(SIZE, SIZE).rotateX(-Math.PI / 2), waterMat);
   water.position.y = WATER_Y;
   water.receiveShadow = true;
   group.add(water);
 
-  // waterfall: three translucent ribbons
-  const ft = fallTexture(rnd);
+  // waterfall: three translucent ribbons (the last one a fresnel spray veil) on one animated shader
   const top = A2W(FALL_TOP.a, FALL_TOP.b);
   const base = A2W(FALL_BASE.a, FALL_BASE.b);
   const dir = new THREE.Vector3(base.x - top.x, 0, base.z - top.z).normalize();
   const side = new THREE.Vector3(-dir.z, 0, dir.x);
-  const ribbons: THREE.Texture[] = [];
-  for (const [w, off, op] of [[2.6, 0.0, 0.95], [1.8, 0.25, 0.75], [3.2, -0.2, 0.45]]) {
+  for (const [w, off, op, veil] of [[2.6, 0.0, 0.95, 0], [1.8, 0.25, 0.75, 0], [3.2, -0.2, 0.45, 1]]) {
     const pts: THREE.Vector3[] = [];
     const m = 40;
     for (let i = 0; i <= m; i++) {
@@ -162,7 +129,7 @@ export function createValley(world: WorldData): ValleyScene {
     pts.forEach((pt, i) => {
       const ww = w * (1 + (i / m) * 0.35);
       p.push(pt.x - (side.x * ww) / 2, pt.y, pt.z - (side.z * ww) / 2, pt.x + (side.x * ww) / 2, pt.y, pt.z + (side.z * ww) / 2);
-      uv.push(0, 1 - (i / m) * 2.5, 1, 1 - (i / m) * 2.5);
+      uv.push(0, i / m, 1, i / m);
       if (i < m) {
         const k = i * 2;
         idx.push(k, k + 1, k + 2, k + 1, k + 3, k + 2);
@@ -171,28 +138,28 @@ export function createValley(world: WorldData): ValleyScene {
     rg.setAttribute('position', new THREE.Float32BufferAttribute(p, 3));
     rg.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     rg.setIndex(idx);
-    const tex = ft.clone();
-    tex.needsUpdate = true;
-    tex.wrapT = THREE.RepeatWrapping;
-    tex.offset.y = off;
-    ribbons.push(tex);
-    group.add(new THREE.Mesh(rg, new THREE.MeshBasicMaterial({ map: tex, transparent: true, opacity: op, side: THREE.DoubleSide, depthWrite: false })));
+    const rib = new THREE.Mesh(rg, fallMaterial(shared, op, veil));
+    rib.renderOrder = 2;
+    group.add(rib);
   }
 
-  // mist at the base of the fall
-  const mt = radialTexture(128, [[0, 'rgba(255,255,255,.75)'], [1, 'rgba(255,255,255,0)']]);
-  const mist: { s: THREE.Sprite; x: number; y: number; z: number; ph: number }[] = [];
-  for (let i = 0; i < 70; i++) {
-    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: mt, transparent: true, opacity: 0.18 + rnd() * 0.22, depthWrite: false }));
-    const r = rnd() * 3.5;
-    const ang = rnd() * Math.PI * 2;
-    const y = 0.4 + rnd() * (3 + (3.5 - r));
-    s.position.set(base.x + Math.cos(ang) * r, y, base.z + Math.sin(ang) * r);
-    const sc = 1.5 + rnd() * 3.5;
-    s.scale.set(sc, sc, 1);
-    group.add(s);
-    mist.push({ s, x: s.position.x, y, z: s.position.z, ph: rnd() * 6.28 });
-  }
+  // spray where the fall lands and at the lip, drifting mist, pool rings, and the river back to the lake
+  const impact = new THREE.Vector3(top.x + dir.x * 1.44, WATER_Y, top.z + dir.z * 1.44);
+  const lip = new THREE.Vector3(top.x, FALL_TOP.h + 0.3, top.z);
+  const mistAt = impact.clone().lerp(new THREE.Vector3(base.x, WATER_Y, base.z), 0.3);
+  const fx = profile.fx;
+  group.add(createBillboards({ kind: 'SPRAY', count: Math.round(900 * fx), origin: impact, side, dir, spread: 2.2, seed: 21 }, shared));
+  group.add(createBillboards({ kind: 'SPRAY', count: Math.round(140 * fx), origin: lip, side, dir, spread: 1.8, seed: 33 }, shared));
+  group.add(createBillboards({ kind: 'MIST', count: Math.round(70 * fx) + 20, origin: mistAt, side, dir, spread: 4, seed: 57 }, shared));
+  group.add(createPool(impact, 7, shared));
+  group.add(createRiver(RIVER.map(([a, b]) => {
+    const w = A2W(a, b);
+    return new THREE.Vector3(w.x, WATER_Y, w.z);
+  }), 2.6, shared));
+
+  // grass blades on the grass mask
+  const grass = createGrass(world, ground, shared);
+  group.add(grass.mesh);
 
   // instanced pines
   const crownProfile = [[0, 0], [0.55, 0.05], [0.2, 0.32], [0.45, 0.36], [0.14, 0.62], [0.32, 0.66], [0.06, 0.92], [0, 1]].map(([r, y]) => new THREE.Vector2(r, y));
@@ -202,6 +169,8 @@ export function createValley(world: WorldData): ValleyScene {
   trunk.translate(0, 0.25, 0);
   const cm = new THREE.InstancedMesh(crown, new THREE.MeshStandardMaterial({ color: '#ffffff', roughness: 1, flatShading: true }), world.treeCount);
   const tm = new THREE.InstancedMesh(trunk, new THREE.MeshStandardMaterial({ color: '#4a3a2c', roughness: 1 }), world.treeCount);
+  swayPines(cm.material as THREE.Material, shared);
+  swayPines(tm.material as THREE.Material, shared);
   cm.instanceMatrix.array.set(world.treeMatrices.subarray(0, world.treeCount * 16));
   tm.instanceMatrix.array.set(world.treeMatrices.subarray(0, world.treeCount * 16));
   const col = new THREE.Color();
@@ -242,17 +211,14 @@ export function createValley(world: WorldData): ValleyScene {
   });
 
   const update = (t: number) => {
-    nt.offset.set(t * 0.004, t * 0.0025);
-    ribbons.forEach((r, i) => {
-      r.offset.y = -t * (0.35 + i * 0.08);
-    });
-    for (const m of mist) {
-      m.s.position.set(m.x + Math.sin(t * 0.25 + m.ph) * 0.35, m.y + Math.sin(t * 0.4 + m.ph) * 0.15, m.z + Math.cos(t * 0.22 + m.ph) * 0.35);
-    }
+    shared.uTime.value = t;
     for (const c of clouds) {
       c.s.position.x = c.x + Math.sin(t * 0.03 + c.ph) * 3;
       c.s.position.z = c.z + Math.cos(t * 0.025 + c.ph) * 2;
     }
   };
-  return { group, heightAt, update };
+  const setReduced = (reduced: boolean) => {
+    shared.uMotion.value = Number(!reduced);
+  };
+  return { group, heightAt, update, setCamera: grass.setCamera, setReduced };
 }

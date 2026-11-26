@@ -6,11 +6,16 @@ export type Profile = {
   trees: number;
   tex: number;
   shadowMap: number;
+  rock: number;
+  rockOctaves: number;
+  grass: number;
+  grassDensity: number;
+  fx: number;
 };
 
 export const PROFILES: Record<'high' | 'low', Profile> = {
-  high: { name: 'high', n: 1024, worldSize: 120, droplets: 600000, trees: 26000, tex: 2048, shadowMap: 4096 },
-  low: { name: 'low', n: 512, worldSize: 120, droplets: 150000, trees: 9000, tex: 1024, shadowMap: 2048 },
+  high: { name: 'high', n: 1024, worldSize: 120, droplets: 600000, trees: 26000, tex: 2048, shadowMap: 4096, rock: 512, rockOctaves: 6, grass: 160000, grassDensity: 900, fx: 1 },
+  low: { name: 'low', n: 512, worldSize: 120, droplets: 150000, trees: 9000, tex: 1024, shadowMap: 2048, rock: 256, rockOctaves: 4, grass: 45000, grassDensity: 450, fx: 0.35 },
 };
 
 export type ProfileInput = {
