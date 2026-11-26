@@ -21,7 +21,8 @@ vec4 tri(sampler2D t, vec3 p, vec3 w) {
 const ROCK_BLOCK = /* glsl */ `
 vec3 N = normalize(vWNrm);
 float rockW = 1.0 - smoothstep(0.5, 0.76, N.y);
-if (rockW > 0.002) {
+// no branch here: texture lookups and dFdx/dFdy need uniform control flow, rockW is applied with mix below
+{
   vec3 p = vWPos;
   vec3 w = pow(abs(N), vec3(4.0));
   w /= (w.x + w.y + w.z);

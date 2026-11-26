@@ -131,7 +131,8 @@ void main() {
     a = smoothstep(0.0, 0.08, ph) * (1.0 - ph);
     a *= step(${WATER_Y.toFixed(2)}, c.y);
   #endif
-  vA = a;
+  // reduced motion: valley.update is skipped so every water shader freezes; hide the particles instead of a frozen dotted cloud
+  vA = a * step(0.5, uMotion);
   vUv = position.xy * 2.0;
   vec4 mv = viewMatrix * vec4(c, 1.0);
   mv.xy += position.xy * size;
