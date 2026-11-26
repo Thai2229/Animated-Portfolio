@@ -1,8 +1,10 @@
 // Everything heavy and pure: heightfield, baked shadows, albedo texture and tree placement.
 import { createNoise } from './noise';
-import { generateHeightfield, makeHeightAt, polyDist } from './heightfield';
+import { generateHeightfield, makeHeightAt, polyDist, polyNearest } from './heightfield';
 import { bakeShadows } from './bake';
-import { A2W, W2A, SITES, SUN_DIR, RIVER, PATH_ALL } from './layout';
+import { A2W, W2A, SITES, SUN_DIR, RIVER, PATH_ALL, FEEDER, streamWidth } from './layout';
+import { grassAmount, scatterGrass } from './grass';
+import { makeRockTextures } from './rock';
 import type { Profile } from './profile';
 
 const sstep = (a: number, b: number, x: number) => {
@@ -23,6 +25,12 @@ export type WorldData = {
   treeCount: number;
   treeMatrices: Float32Array;
   treeHsl: Float32Array;
+  rockSize: number;
+  rock: Uint8ClampedArray;
+  rockNoise: Uint8ClampedArray;
+  grassCount: number;
+  grassPos: Float32Array;
+  grassRnd: Float32Array;
 };
 
 export function buildWorld(profile: Profile, report: (stage: string, fraction: number) => void): WorldData {
@@ -77,12 +85,56 @@ export function buildWorld(profile: Profile, report: (stage: string, fraction: n
     return [-dX / l, 1 / l, -dZ / l];
   };
 
+  // normal of the box-blurred height: smooth, no gullies
+  const nrmBlurAt = (x: number, y: number) => {
+    const xl = Math.max(0, x - 1);
+    const xr = Math.min(n - 1, x + 1);
+    const yu = Math.max(0, y - 1);
+    const yd = Math.min(n - 1, y + 1);
+    const dX = (blur[y * n + xr] - blur[y * n + xl]) / ((xr - xl) * texel);
+    const dZ = (blur[yd * n + x] - blur[yu * n + x]) / ((yd - yu) * texel);
+    const l = Math.hypot(dX, 1, dZ);
+    return [-dX / l, 1 / l, -dZ / l];
+  };
+
+  // distance from the stream's banks (negative inside), so no grass or trees grow in the channel
+  const streamGap = (a: number, b: number) => {
+    const st = polyNearest(a, b, FEEDER);
+    return st.d - streamWidth(st.s) / 2 - 0.8;
+  };
+
+  // where grass grows: flat, dry, clear of courtyards and paths (also drives the blades)
+  const GRASS = new Float32Array(n * n);
+  for (let y = 1; y < n - 1; y++) {
+    for (let x = 1; x < n - 1; x++) {
+      const i = y * n + x;
+      const h = H[i];
+      if (h < 0.5) continue;
+      const ny = nrmAt(x, y)[1];
+      if (ny < 0.82) continue;
+      const { a, b } = W2A(((x / (n - 1)) - 0.5) * worldSize, ((y / (n - 1)) - 0.5) * worldSize);
+      let siteK = 9;
+      for (const k of [SITES.ledge, SITES.valley, SITES.lake]) siteK = Math.min(siteK, Math.hypot(a - k.a, b - k.b) / k.r);
+      GRASS[i] = grassAmount({ ny, h, siteK, pathD: Math.min(polyDist(a, b, PATH_ALL), streamGap(a, b)) });
+    }
+  }
+  const grassAt = (fx: number, fy: number) => {
+    const xi = Math.min(n - 2, fx | 0);
+    const yi = Math.min(n - 2, fy | 0);
+    const tx = fx - xi;
+    const ty = fy - yi;
+    const i = yi * n + xi;
+    return GRASS[i] * (1 - tx) * (1 - ty) + GRASS[i + 1] * tx * (1 - ty) + GRASS[i + n] * (1 - tx) * ty + GRASS[i + n + 1] * tx * ty;
+  };
+
   // albedo with baked lighting
   report('Painting the valley', 0.62);
   const VEG = new Float32Array(n * n);
   const albedo = new Uint8ClampedArray(TEX * TEX * 4);
   const granite: Rgb = [178, 172, 162];
-  const graniteD: Rgb = [112, 106, 100];
+  const grassD: Rgb = [70, 104, 44];
+  const dirt: Rgb = [120, 98, 70];
+  const clover: Rgb = [150, 168, 84];
   const soil: Rgb = [150, 128, 100];
   const grass: Rgb = [96, 128, 62];
   const grassL: Rgb = [140, 160, 84];
@@ -110,9 +162,8 @@ export function buildWorld(profile: Profile, report: (stage: string, fraction: n
       const fine = simplex(wx * 3.1, wz * 3.1) * 0.5 + 0.5;
       const fine2 = simplex(wx * 9, wz * 9) * 0.5 + 0.5;
       const mid = fbm(wx * 0.22, wz * 0.22, 3) * 0.5 + 0.5;
-      const joint = Math.abs(Math.sin(h * 2.3 + fbm(wx * 0.3, wz * 0.3, 2) * 3));
-      const streak = simplex(wx * 1.5 + h * 0.2, wz * 1.5) * 0.5 + 0.5;
-      let c = mixc(granite, graniteD, sstep(0.4, 1, streak) * 0.7 + sstep(0.85, 1, joint) * 0.4);
+      // steep rock stays one flat colour here: the triplanar rock shader supplies all of its detail
+      let c = granite;
       const gentle = sstep(0.62, 0.32, slope);
       const lowGrass = sstep(0.25, 0.04, slope) * sstep(14, 2, h);
       let veg = gentle * (0.55 + 0.45 * sstep(0.2, -0.7, cav)) + (mid - 0.5) * 0.5 + (fine - 0.5) * 0.35 - sstep(16, 26, h) * 0.6;
@@ -124,15 +175,33 @@ export function buildWorld(profile: Profile, report: (stage: string, fraction: n
       c = mixc(c, ground, gentle * 0.85 + veg * 0.3);
       const dp = Math.hypot(a - V.a, b - V.b);
       c = mixc(c, mixc(grass, grassL, fine), 0.6 * (1 - sstep(V.r * 0.6, V.r + 0.8, dp)));
+      const gm = grassAt(fx, fy);
+      if (gm > 0.01) {
+        const blot = simplex(wx * 5.5, wz * 5.5) * 0.5 + 0.5;
+        const specks = simplex(wx * 17 + 30, wz * 17) * 0.5 + 0.5;
+        const pale = simplex(wx * 13 + 7, wz * 13 - 4) * 0.5 + 0.5;
+        let gc = mixc(grassD, grassL, mid * 0.55 + blot * 0.45);
+        gc = mixc(gc, dirt, sstep(0.74, 0.92, specks) * 0.7);
+        gc = mixc(gc, clover, sstep(0.78, 0.94, pale) * 0.65);
+        c = mixc(c, gc, gm * 0.95);
+      }
       if (h < 0.6) c = mixc(c, mixc(sand, wet, sstep(0.6, -0.4, h)), sstep(0.6, 0.1, h));
       VEG[i] = 0;
       if (h > 0.5) VEG[i] = veg * gentle;
-      const ndl = Math.max(0, nx * sun.x + ny * sun.y + nz * sun.z);
-      const sh = shadow[i];
-      const ao = 0.5 + 0.5 * sstep(-1, 0.4, cav);
+      // steep rock: no baked shadow or cavity (they smear down the walls as dark stripes), a gully-free normal,
+      // and a floor of 0.75 of the fully lit value so the triplanar rock carries the look
+      const steep = 1 - sstep(0.5, 0.8, ny);
+      const ndlRaw = Math.max(0, nx * sun.x + ny * sun.y + nz * sun.z);
+      const bn = nrmBlurAt(xi, yi);
+      const ndlSmooth = Math.max(0, bn[0] * sun.x + bn[1] * sun.y + bn[2] * sun.z);
+      const ndl = lerp(ndlRaw, ndlSmooth, steep);
+      const sh = 1 - (1 - shadow[i]) * (1 - steep);
+      const ao = 1 - (0.5 - 0.5 * sstep(-1, 0.4, cav)) * (1 - steep);
       const o = (ty * TEX + tx) * 4;
       for (let k = 0; k < 3; k++) {
-        const lit = (c[k] / 255) * (skyC[k] * ao * (0.6 + 0.4 * ny) + sunC[k] * ndl * sh) * (0.93 + 0.14 * fine2);
+        const full = skyC[k] * (0.6 + 0.4 * bn[1]) + sunC[k] * ndlSmooth;
+        const L = skyC[k] * ao * (0.6 + 0.4 * ny) + sunC[k] * ndl * sh;
+        const lit = (c[k] / 255) * lerp(L, Math.max(L, 0.75 * full), steep) * (1 + gentle * 0.14 * (fine2 - 0.5));
         albedo[o + k] = Math.min(255, Math.pow(lit, 1 / 1.06) * 255);
       }
       albedo[o + 3] = 255;
@@ -164,7 +233,7 @@ export function buildWorld(profile: Profile, report: (stage: string, fraction: n
       if (s === V) pad = -0.2;
       if (Math.hypot(a - s.a, b - s.b) < s.r + pad) blocked = true;
     }
-    if (blocked || polyDist(a, b, PATH_ALL) < 0.7 || polyDist(a, b, RIVER) < 2) continue;
+    if (blocked || polyDist(a, b, PATH_ALL) < 0.7 || polyDist(a, b, RIVER) < 2 || streamGap(a, b) < 0.4) continue;
     const h = hAtW(w.x, w.z);
     if (h < 0.5) continue;
     const s = 0.26 + rnd() * 0.3;
@@ -177,9 +246,15 @@ export function buildWorld(profile: Profile, report: (stage: string, fraction: n
     treeHsl.set([0.29 + rnd() * 0.07, 0.22 + rnd() * 0.14, 0.075 + rnd() * 0.06], placed * 3);
     placed++;
   }
+  // grass blades and the rock textures
+  report('Sowing the grass', 0.97);
+  const blades = scatterGrass(GRASS, n, worldSize, hAtW, { density: profile.grassDensity, max: profile.grass, seed: 91 });
+  const rockTex = makeRockTextures(profile.rock, profile.rockOctaves);
   report('Done', 1);
   return {
     n, worldSize, heights: H, siteHeights: hf.siteHeights, tex: TEX, albedo,
     treeCount: placed, treeMatrices, treeHsl,
+    rockSize: rockTex.size, rock: rockTex.rock, rockNoise: rockTex.noise,
+    grassCount: blades.count, grassPos: blades.pos, grassRnd: blades.rnd,
   };
 }

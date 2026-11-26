@@ -1,6 +1,6 @@
 import { createNoise } from './noise';
 import {
-  A2W, W2A, SITES, LAKE, FALL_TOP, FALL_BASE, RIVER, RIDGE, FEEDER, MESAS, type Pt,
+  A2W, W2A, SITES, LAKE, FALL_TOP, FALL_BASE, RIVER, RIDGE, FEEDER, MESAS, streamWidth, streamBed, FALL_SCALE, type Pt,
 } from './layout';
 
 export type HeightfieldOptions = {
@@ -30,6 +30,23 @@ export function polyDist(px: number, py: number, pts: Pt[]) {
     best = Math.min(best, segDist(px, py, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]).d);
   }
   return best;
+}
+
+// nearest distance to a polyline plus the arclength from its first point to that nearest point
+export function polyNearest(px: number, py: number, pts: Pt[]) {
+  let best = 1e9;
+  let at = 0;
+  let run = 0;
+  for (let i = 0; i < pts.length - 1; i++) {
+    const len = Math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]);
+    const sd = segDist(px, py, pts[i][0], pts[i][1], pts[i + 1][0], pts[i + 1][1]);
+    if (sd.d < best) {
+      best = sd.d;
+      at = run + sd.t * len;
+    }
+    run += len;
+  }
+  return { d: best, s: at };
 }
 
 // Bilinear height lookup in world coordinates (x, z); clamps to the field.
@@ -201,18 +218,22 @@ export function generateHeightfield(opts: HeightfieldOptions) {
       h = lerp(h, L.h, 1 - sstep(L.r, L.r + 2.5, dl2));
       // massif shelf upstream of the lip, so the fall drops from a real cliff whatever the seed
       const df = polyDist(a, b, FEEDER);
-      h = Math.max(h, lerp(h, FALL_TOP.h + 3, (1 - sstep(3.5, 8, df)) * sstep(FALL_TOP.b - 2, FALL_TOP.b, b)));
+      h = Math.max(h, lerp(h, FALL_TOP.h + 3, (1 - sstep(4.5, 9, df)) * sstep(FALL_TOP.b - 2, FALL_TOP.b, b)));
       const sd = segDist(a, b, FALL_TOP.a, FALL_TOP.b, FALL_BASE.a, FALL_BASE.b);
-      if (sd.d < 4.5) {
+      if (sd.d < 7) {
         const prof = lerp(FALL_TOP.h, FALL_BASE.h, sstep(0.02, 0.22, sd.t));
-        h = Math.min(h, lerp(prof, h, sstep(2.2, 4.5, sd.d)));
+        h = Math.min(h, lerp(prof, h, sstep(3.6, 7, sd.d)));
       }
       const dl = Math.hypot(a - FALL_TOP.a, b - FALL_TOP.b);
-      if (dl < 6 && h > FALL_TOP.h) h = lerp(FALL_TOP.h, h, sstep(1.2, 6, dl));
-      if (df < 1.6) h = Math.min(h, lerp(FALL_TOP.h - 0.4, h, df / 1.6));
+      if (dl < 8 && h > FALL_TOP.h) h = lerp(FALL_TOP.h, h, sstep(2.2, 8, dl));
+      // winding stream channel from the massif to the lip, the bed climbing gently upstream
+      const st = polyNearest(a, b, FEEDER);
+      const half = streamWidth(st.s) / 2 + 0.5;
+      if (st.d < half + 1.4) h = Math.min(h, lerp(streamBed(st.s), h, sstep(half - 0.3, half + 1.4, st.d)));
       // the lakeside tier keeps its flat top: later water carving fades out inside it
       const keep = sstep(L.r, L.r + 2.5, dl2);
-      const dp = Math.hypot(a - FALL_BASE.a, b - FALL_BASE.b) + fbm(a * 0.5, b * 0.5, 2) * 0.6;
+      // the pool is stretched sideways (along a) to match the wider fall without reaching the lip
+      const dp = Math.hypot((a - FALL_BASE.a) / FALL_SCALE, b - FALL_BASE.b) + fbm(a * 0.5, b * 0.5, 2) * 0.6;
       h = lerp(h, Math.min(h, -1.2), (1 - sstep(2.6, 4.2, dp)) * keep);
       const dr = polyDist(a, b, RIVER) + fbm(a * 0.4, b * 0.4, 2) * 0.4;
       h = lerp(h, Math.min(h, -0.8), (1 - sstep(0.9, 2.2, dr)) * keep);

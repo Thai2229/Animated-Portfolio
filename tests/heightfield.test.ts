@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { generateHeightfield } from '@/terrain/heightfield';
-import { A2W, SITES, WATER_Y } from '@/terrain/layout';
+import { generateHeightfield, polyNearest } from '@/terrain/heightfield';
+import { A2W, SITES, WATER_Y, FEEDER, streamBed, streamWidth } from '@/terrain/layout';
 
 const OPTS = { n: 192, worldSize: 120, seed: 1234, erosionDroplets: 20000 };
 
@@ -98,5 +98,38 @@ describe('generateHeightfield', () => {
   it('has a waterfall drop of at least 12 units', () => {
     const drop = at(FALL_LIP.a, FALL_LIP.b) - at(PLUNGE_POOL.a, PLUNGE_POOL.b);
     expect(drop).toBeGreaterThanOrEqual(12);
+  });
+
+  it('polyNearest gives distance and arclength along the polyline', () => {
+    const r = polyNearest(5, 2, [[0, 0], [10, 0], [10, 10]]);
+    expect(r.d).toBeCloseTo(2, 9);
+    expect(r.s).toBeCloseTo(5, 9);
+    expect(polyNearest(12, 4, [[0, 0], [10, 0], [10, 10]]).s).toBeCloseTo(14, 9);
+  });
+
+  it('carves a stream channel down to the lip: bed below the banks, rising upstream', () => {
+    // sample along the feeder polyline at 3 and 10 units upstream of the lip
+    let run = 0;
+    const beds: number[] = [];
+    for (const target of [3, 10]) {
+      run = 0;
+      for (let i = 0; i < FEEDER.length - 1; i++) {
+        const len = Math.hypot(FEEDER[i + 1][0] - FEEDER[i][0], FEEDER[i + 1][1] - FEEDER[i][1]);
+        if (run + len >= target) {
+          const t = (target - run) / len;
+          const a = FEEDER[i][0] + (FEEDER[i + 1][0] - FEEDER[i][0]) * t;
+          const b = FEEDER[i][1] + (FEEDER[i + 1][1] - FEEDER[i][1]) * t;
+          const centre = at(a, b);
+          expect(centre).toBeLessThanOrEqual(streamBed(target) + 0.3);
+          // wider than the water on either side the land is higher than the bed
+          const side = [at(a + 0, b + streamWidth(target) / 2 + 2.6), at(a + streamWidth(target) / 2 + 2.6, b)];
+          expect(Math.max(...side)).toBeGreaterThan(centre + 0.3);
+          beds.push(centre);
+          break;
+        }
+        run += len;
+      }
+    }
+    expect(beds[1]).toBeGreaterThan(beds[0]);
   });
 });
