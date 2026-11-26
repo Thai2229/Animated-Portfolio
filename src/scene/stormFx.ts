@@ -6,11 +6,11 @@ import type { Profile } from '../terrain/profile';
 import { boltPath, burn, type StormState, type Vec3 } from './storm';
 
 const CLOUD_Y = 26;
-const BOLT_SECONDS = 0.25;
+export const BOLT_SECONDS = 0.25;
 const CHAR_SECONDS = 6;
-const BRANCH_SEGS = 5;
-const MAIN_SEGS = 14;
-const MAX_SEGS = MAIN_SEGS + 2 * BRANCH_SEGS;
+export const BRANCH_SEGS = 5;
+export const MAIN_SEGS = 14;
+export const MAX_SEGS = MAIN_SEGS + 2 * BRANCH_SEGS;
 const CHARCOAL = new THREE.Color('#14100d');
 
 const PARTICLE_VERT = /* glsl */ `
@@ -80,6 +80,49 @@ const SMOKE_COLOR = /* glsl */ `
   gl_FragColor = vec4(vec3(0.08, 0.075, 0.07), soft * sin(vLife * 3.14159) * 0.6);
 `;
 
+// bolt: pre-allocated crossed ribbons (one along x, one along z per segment), refilled on each strike.
+// A narrow bright core plus a wide faint glow ribbon share the same path.
+export function createRibbon(group: THREE.Group, color: string, wScale: number, maxSegs = MAX_SEGS) {
+  const pos = new Float32Array(maxSegs * 2 * 4 * 3);
+  const g = new THREE.BufferGeometry();
+  const attr = new THREE.BufferAttribute(pos, 3);
+  attr.setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('position', attr);
+  const bi: number[] = [];
+  for (let q = 0; q < maxSegs * 2; q++) bi.push(q * 4, q * 4 + 1, q * 4 + 2, q * 4 + 1, q * 4 + 3, q * 4 + 2);
+  g.setIndex(bi);
+  g.setDrawRange(0, 0);
+  const mat = new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity: 0, blending: THREE.AdditiveBlending,
+    depthWrite: false, fog: false, toneMapped: false, side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(g, mat);
+  mesh.frustumCulled = false;
+  mesh.visible = false;
+  group.add(mesh);
+  let quads = 0;
+  return {
+    mesh, mat,
+    reset: () => {
+      quads = 0;
+    },
+    seg: (a: Vec3, b: Vec3, w: number) => {
+      for (const [dx, dz] of [[w * wScale, 0], [0, w * wScale]]) {
+        pos.set([a.x - dx, a.y, a.z - dz, a.x + dx, a.y, a.z + dz, b.x - dx, b.y, b.z - dz, b.x + dx, b.y, b.z + dz], quads * 12);
+        quads++;
+      }
+    },
+    commit: () => {
+      g.setDrawRange(0, quads * 6);
+      attr.needsUpdate = true;
+    },
+    dispose: () => {
+      g.dispose();
+      mat.dispose();
+    },
+  };
+}
+
 export type StormFx = {
   group: THREE.Group;
   update: (s: StormState, t: number, px: number) => void;
@@ -126,50 +169,9 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     clouds.push({ s: sp, x: w.x, z: w.z, ph: i * 1.7, k: 0.6 + rnd() * 0.4 });
   }
 
-  // bolt: pre-allocated crossed ribbons (one along x, one along z per segment), refilled on each strike.
-  // A narrow bright core plus a wide faint glow ribbon share the same path.
-  const ribbon = (color: string, wScale: number) => {
-    const pos = new Float32Array(MAX_SEGS * 2 * 4 * 3);
-    const g = new THREE.BufferGeometry();
-    const attr = new THREE.BufferAttribute(pos, 3);
-    attr.setUsage(THREE.DynamicDrawUsage);
-    g.setAttribute('position', attr);
-    const bi: number[] = [];
-    for (let q = 0; q < MAX_SEGS * 2; q++) bi.push(q * 4, q * 4 + 1, q * 4 + 2, q * 4 + 1, q * 4 + 3, q * 4 + 2);
-    g.setIndex(bi);
-    g.setDrawRange(0, 0);
-    const mat = new THREE.MeshBasicMaterial({
-      color, transparent: true, opacity: 0, blending: THREE.AdditiveBlending,
-      depthWrite: false, fog: false, toneMapped: false, side: THREE.DoubleSide,
-    });
-    const mesh = new THREE.Mesh(g, mat);
-    mesh.frustumCulled = false;
-    mesh.visible = false;
-    group.add(mesh);
-    let quads = 0;
-    return {
-      mesh, mat,
-      reset: () => {
-        quads = 0;
-      },
-      seg: (a: Vec3, b: Vec3, w: number) => {
-        for (const [dx, dz] of [[w * wScale, 0], [0, w * wScale]]) {
-          pos.set([a.x - dx, a.y, a.z - dz, a.x + dx, a.y, a.z + dz, b.x - dx, b.y, b.z - dz, b.x + dx, b.y, b.z + dz], quads * 12);
-          quads++;
-        }
-      },
-      commit: () => {
-        g.setDrawRange(0, quads * 6);
-        attr.needsUpdate = true;
-      },
-      dispose: () => {
-        g.dispose();
-        mat.dispose();
-      },
-    };
-  };
-  const core = ribbon('#ffffff', 1);
-  const glow = ribbon('#7fa2ff', 4.5);
+  // bolt: a narrow bright core plus a wide faint glow ribbon share the same path
+  const core = createRibbon(group, '#ffffff', 1);
+  const glow = createRibbon(group, '#7fa2ff', 4.5);
   const bolts = [core, glow];
   const strikeBolt = (seed2: number, top: THREE.Vector3) => {
     for (const r of bolts) r.reset();
