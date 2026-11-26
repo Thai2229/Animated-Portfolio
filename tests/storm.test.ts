@@ -204,8 +204,8 @@ describe('burn(age)', () => {
       const b = burn(a);
       expect(b).toBeGreaterThanOrEqual(0);
       expect(b).toBeLessThanOrEqual(1);
-      if (b >= 0.99) peaked = true;
       if (peaked) expect(b).toBeLessThanOrEqual(prev + 1e-9);
+      if (b >= 0.99) peaked = true;
       prev = b;
     }
     expect(peaked).toBe(true);

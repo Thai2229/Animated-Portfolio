@@ -1,0 +1,267 @@
+// three.js side of the storm: cloud layer, lightning bolt, fire/smoke on the struck pine, charring.
+import * as THREE from 'three';
+import { A2W } from '../terrain/layout';
+import type { WorldData } from '../terrain/world';
+import type { Profile } from '../terrain/profile';
+import { boltPath, burn, type StormState, type Vec3 } from './storm';
+
+const CLOUD_Y = 40;
+const BOLT_SECONDS = 0.25;
+const CHAR_SECONDS = 6;
+const BRANCH_SEGS = 5;
+const MAIN_SEGS = 14;
+const MAX_SEGS = MAIN_SEGS + 2 * BRANCH_SEGS;
+const CHARCOAL = new THREE.Color('#14100d');
+
+const PARTICLE_VERT = /* glsl */ `
+uniform float uTime;
+uniform float uBurn;
+uniform float uPx;
+uniform vec3 uOrigin;
+uniform float uScale;
+attribute vec4 aRnd;
+varying float vLife;
+varying float vOn;
+void main() {
+  float speed = SPEED * (0.7 + aRnd.y * 0.6);
+  float life = fract(uTime * speed + aRnd.x);
+  vLife = life;
+  vOn = step(aRnd.w, uBurn);
+  vec3 p = uOrigin;
+  float size = 0.0;
+  KIND_BODY
+  vec4 mv = modelViewMatrix * vec4(p, 1.0);
+  gl_Position = projectionMatrix * mv;
+  gl_PointSize = size * vOn * uPx / -mv.z;
+}
+`;
+
+const FLAME_BODY = /* glsl */ `
+  float r = (1.0 - life * 0.7) * 0.3 * uScale * 2.2;
+  p += vec3((aRnd.y - 0.5) * 2.0 * r, life * (0.5 + aRnd.z) * 1.1, (aRnd.z - 0.5) * 2.0 * r);
+  p.x += sin(uTime * 7.0 + aRnd.x * 40.0) * 0.06 * life;
+  size = (0.5 + 0.5 * aRnd.w) * (1.0 - life) * 1.0 * (0.4 + 0.6 * uBurn);
+`;
+const SPARK_BODY = /* glsl */ `
+  float t = life * 2.2;
+  vec3 v = vec3((aRnd.y - 0.5) * 1.6, 1.2 + aRnd.z * 1.6, (aRnd.z - 0.5) * 1.6);
+  p += v * t - vec3(0.0, 1.6 * t * t, 0.0);
+  size = 0.1 * (1.0 - life);
+`;
+const SMOKE_BODY = /* glsl */ `
+  p += vec3(life * 3.2 + (aRnd.y - 0.5) * 0.5, 0.5 + life * 5.0, life * 1.6 + (aRnd.z - 0.5) * 0.5);
+  size = 0.8 + life * 2.6;
+`;
+
+const FRAG = /* glsl */ `
+varying float vLife;
+varying float vOn;
+void main() {
+  float d = length(gl_PointCoord - 0.5) * 2.0;
+  float soft = 1.0 - smoothstep(0.0, 1.0, d);
+  if (soft <= 0.0 || vOn <= 0.0) discard;
+  COLOR_BODY
+}
+`;
+const FLAME_COLOR = /* glsl */ `
+  vec3 c = mix(vec3(1.0, 0.82, 0.32), vec3(0.85, 0.2, 0.04), vLife);
+  gl_FragColor = vec4(c, soft * soft * (1.0 - vLife) * 0.9);
+`;
+const SPARK_COLOR = /* glsl */ `
+  gl_FragColor = vec4(1.0, 0.75, 0.3, soft * (1.0 - vLife));
+`;
+const SMOKE_COLOR = /* glsl */ `
+  gl_FragColor = vec4(vec3(0.16, 0.15, 0.14), soft * sin(vLife * 3.14159) * 0.4);
+`;
+
+export type StormFx = {
+  group: THREE.Group;
+  update: (s: StormState, t: number, px: number) => void;
+  // world position of the burning tree top, for the debug hook
+  treeTop: THREE.Vector3;
+};
+
+export function createStormFx(world: WorldData, profile: Profile, crown: THREE.InstancedMesh): StormFx {
+  const group = new THREE.Group();
+  const low = profile.name === 'low';
+  const third = 1 / (1 + 2 * Number(low));
+
+  // clouds: dark soft sprites that slide in over the massif
+  const cc = document.createElement('canvas');
+  cc.width = 256;
+  cc.height = 128;
+  const cg = cc.getContext('2d')!;
+  let seed = 17;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < 34; i++) {
+    const x = 40 + rnd() * 176;
+    const y = 36 + rnd() * 56;
+    const r = 14 + rnd() * 38;
+    const gr = cg.createRadialGradient(x, y, 0, x, y, r);
+    gr.addColorStop(0, 'rgba(255,255,255,.5)');
+    gr.addColorStop(1, 'rgba(255,255,255,0)');
+    cg.fillStyle = gr;
+    cg.fillRect(0, 0, 256, 128);
+  }
+  const ct = new THREE.CanvasTexture(cc);
+  const clouds: { s: THREE.Sprite; x: number; z: number; ph: number; k: number }[] = [];
+  const count = Math.round(20 * (1 - 0.5 * Number(low)));
+  for (let i = 0; i < count; i++) {
+    const w = A2W(-10 + rnd() * 80, -30 + rnd() * 80);
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: ct, color: '#323a45', transparent: true, opacity: 0, depthWrite: false, fog: false,
+    }));
+    const size = 40 + rnd() * 40;
+    sp.position.set(w.x, CLOUD_Y + rnd() * 8, w.z);
+    sp.scale.set(size, size * 0.5, 1);
+    sp.visible = false;
+    group.add(sp);
+    clouds.push({ s: sp, x: w.x, z: w.z, ph: i * 1.7, k: 0.6 + rnd() * 0.4 });
+  }
+
+  // bolt: pre-allocated crossed ribbons (one along x, one along z per segment), refilled on each strike
+  const bp = new Float32Array(MAX_SEGS * 2 * 4 * 3);
+  const bg = new THREE.BufferGeometry();
+  const bpa = new THREE.BufferAttribute(bp, 3);
+  bpa.setUsage(THREE.DynamicDrawUsage);
+  bg.setAttribute('position', bpa);
+  const bi: number[] = [];
+  for (let q = 0; q < MAX_SEGS * 2; q++) bi.push(q * 4, q * 4 + 1, q * 4 + 2, q * 4 + 1, q * 4 + 3, q * 4 + 2);
+  bg.setIndex(bi);
+  bg.setDrawRange(0, 0);
+  const bmat = new THREE.MeshBasicMaterial({
+    color: '#dfe8ff', transparent: true, opacity: 0, blending: THREE.AdditiveBlending,
+    depthWrite: false, fog: false, toneMapped: false, side: THREE.DoubleSide,
+  });
+  const bolt = new THREE.Mesh(bg, bmat);
+  bolt.frustumCulled = false;
+  bolt.visible = false;
+  group.add(bolt);
+  let quads = 0;
+  const seg = (a: Vec3, b: Vec3, w: number) => {
+    for (const [dx, dz] of [[w, 0], [0, w]]) {
+      const o = quads * 12;
+      bp.set([a.x - dx, a.y, a.z - dz, a.x + dx, a.y, a.z + dz, b.x - dx, b.y, b.z - dz, b.x + dx, b.y, b.z + dz], o);
+      quads++;
+    }
+  };
+  const strikeBolt = (seed2: number, top: THREE.Vector3) => {
+    quads = 0;
+    const from = { x: top.x + 2, y: CLOUD_Y, z: top.z + 1 };
+    const path = boltPath(seed2, from, { x: top.x, y: top.y, z: top.z }, MAIN_SEGS);
+    for (let i = 0; i < MAIN_SEGS; i++) seg(path[i], path[i + 1], 0.16);
+    for (const [at, dx, dz] of [[4, 5, -3], [8, -4, 4]]) {
+      const s = path[at];
+      const br = boltPath(seed2 + at, s, { x: s.x + dx, y: s.y - 9, z: s.z + dz }, BRANCH_SEGS);
+      for (let i = 0; i < BRANCH_SEGS; i++) seg(br[i], br[i + 1], 0.08);
+    }
+    bg.setDrawRange(0, quads * 6);
+    bpa.needsUpdate = true;
+  };
+
+  // fire: three Points clouds driven entirely by uniforms (no per-frame allocation)
+  const uniforms = {
+    uTime: { value: 0 }, uBurn: { value: 0 }, uPx: { value: 1 },
+    uOrigin: { value: new THREE.Vector3() }, uScale: { value: 0.4 },
+  };
+  const particles = (n: number, speed: string, body: string, color: string, additive: boolean) => {
+    const g = new THREE.BufferGeometry();
+    const a = new Float32Array(n * 4);
+    for (let i = 0; i < a.length; i++) a[i] = rnd();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
+    g.setAttribute('aRnd', new THREE.BufferAttribute(a, 4));
+    let blending: THREE.Blending = THREE.NormalBlending;
+    if (additive) blending = THREE.AdditiveBlending;
+    const m = new THREE.ShaderMaterial({
+      uniforms,
+      vertexShader: PARTICLE_VERT.replace('SPEED', speed).replace('KIND_BODY', body),
+      fragmentShader: FRAG.replace('COLOR_BODY', color),
+      transparent: true, depthWrite: false, blending, toneMapped: false,
+    });
+    const pts = new THREE.Points(g, m);
+    pts.frustumCulled = false;
+    pts.visible = false;
+    group.add(pts);
+    return pts;
+  };
+  const fire = [
+    particles(Math.round(130 * third), '1.1', FLAME_BODY, FLAME_COLOR, true),
+    particles(Math.round(70 * third), '0.6', SPARK_BODY, SPARK_COLOR, true),
+    particles(Math.round(70 * third), '0.13', SMOKE_BODY, SMOKE_COLOR, false),
+  ];
+  // one reused light, always in the scene (toggling lights would recompile every material); never casts shadows
+  const light = new THREE.PointLight('#ff8a3a', 0, 16, 2);
+  group.add(light);
+
+  // per-strike state
+  const treeTop = new THREE.Vector3();
+  const orig = new THREE.Color();
+  const tmp = new THREE.Color();
+  let tree = -1;
+  let lastAge = Infinity;
+  let strikes = 0;
+  let charWritten = 1;
+  const writeChar = (i: number, c: number) => {
+    const ic = crown.instanceColor!;
+    tmp.copy(orig).lerp(CHARCOAL, c);
+    ic.setXYZ(i, tmp.r, tmp.g, tmp.b);
+    ic.addUpdateRange(i * 3, 3);
+    ic.needsUpdate = true;
+    charWritten = c;
+  };
+
+  const update = (s: StormState, t: number, px: number) => {
+    // clouds
+    const c = s.cloud;
+    for (const cl of clouds) {
+      cl.s.visible = c > 0;
+      if (c <= 0) continue;
+      cl.s.material.opacity = c * cl.k * 0.85;
+      cl.s.position.x = cl.x + Math.sin(t * 0.03 + cl.ph) * 3 - (1 - c) * 30;
+      cl.s.position.z = cl.z + Math.cos(t * 0.025 + cl.ph) * 2;
+    }
+
+    const st = s.strike;
+    if (st === null) {
+      bolt.visible = false;
+      light.intensity = 0;
+      for (const p of fire) p.visible = false;
+      lastAge = Infinity;
+      return;
+    }
+    if (st.treeIndex !== tree || st.age < lastAge) {
+      // a new strike: locate the tree top, build the bolt, remember the original colour (earlier trees stay charred)
+      tree = st.treeIndex;
+      const m = world.treeMatrices;
+      const o = tree * 16;
+      treeTop.set(m[o + 12], m[o + 13] + 1.05 * m[o + 5], m[o + 14]);
+      uniforms.uOrigin.value.copy(treeTop);
+      uniforms.uScale.value = m[o + 5];
+      crown.getColorAt(tree, orig);
+      charWritten = 0;
+      strikes++;
+      strikeBolt(tree * 31 + strikes, treeTop);
+    }
+    lastAge = st.age;
+
+    bolt.visible = st.age < BOLT_SECONDS;
+    if (bolt.visible) {
+      const k = 1 - st.age / BOLT_SECONDS;
+      bmat.opacity = k * (0.75 + 0.25 * Math.sin(st.age * 90));
+    }
+
+    const b = burn(st.age);
+    uniforms.uTime.value = t;
+    uniforms.uBurn.value = b;
+    uniforms.uPx.value = px;
+    for (const p of fire) p.visible = b > 0;
+    // flicker: two incommensurate sines, scaled by burn
+    light.position.copy(treeTop);
+    light.intensity = b * (34 + 10 * Math.sin(t * 17) + 6 * Math.sin(t * 29 + 1));
+
+    const ch = Math.min(1, st.age / CHAR_SECONDS);
+    if (ch !== charWritten) writeChar(tree, ch);
+  };
+
+  return { group, update, treeTop };
+}
