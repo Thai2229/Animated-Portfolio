@@ -13,7 +13,7 @@ describe('SECTS', () => {
   });
 
   it('uses each site exactly once', () => {
-    expect(SECTS.map((s) => s.site).sort()).toEqual(['ledge', 'lake', 'valley']);
+    expect(SECTS.map((s) => s.site).sort()).toEqual(['lake', 'ledge', 'valley']);
   });
 
   it('uses numerals 一 二 三 once each', () => {

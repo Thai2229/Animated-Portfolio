@@ -31,7 +31,7 @@ describe('layout', () => {
   });
 
   it('defines the three sites with a, b, r', () => {
-    expect(Object.keys(SITES).sort()).toEqual(['ledge', 'lake', 'valley']);
+    expect(Object.keys(SITES).sort()).toEqual(['lake', 'ledge', 'valley']);
     for (const s of Object.values(SITES)) {
       expect(Number.isFinite(s.a)).toBe(true);
       expect(Number.isFinite(s.b)).toBe(true);
