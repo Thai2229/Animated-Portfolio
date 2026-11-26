@@ -67,7 +67,17 @@ export function createValley(world: WorldData, profile: Profile): ValleyScene {
   geo.computeVertexNormals();
   const ground = terrainTexture(world);
   group.add(new THREE.Mesh(geo, makeTerrainMaterial(ground, world, profile)));
-  const catcher = new THREE.Mesh(geo, new THREE.ShadowMaterial({ opacity: 0.34 }));
+  // the sun skims the cliff faces, so a tree's shadow smears into a long hard band there: catch shadows on gentle ground only
+  const catcherMat = new THREE.ShadowMaterial({ opacity: 0.34 });
+  catcherMat.onBeforeCompile = (sh) => {
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying float vNy;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvNy = normal.y;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vNy;')
+      .replace('opacity * ( 1.0 - getShadowMask() )', 'opacity * ( 1.0 - getShadowMask() ) * smoothstep( 0.7, 0.88, vNy )');
+  };
+  const catcher = new THREE.Mesh(geo, catcherMat);
   catcher.receiveShadow = true;
   catcher.position.y = 0.01;
   group.add(catcher);

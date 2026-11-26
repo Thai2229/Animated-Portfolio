@@ -33,7 +33,7 @@ type Props = {
 export function Scene({ world, profile, hovered, active, mobile, reduced, labelRefs, onHover, onSelect, onReady }: Props) {
   const { gl, scene, camera, size, invalidate } = useThree();
   const valley = useMemo(() => createValley(world, profile), [world, profile]);
-  const sects = useMemo(() => buildSects(valley.heightAt, world.siteHeights), [valley, world]);
+  const sects = useMemo(() => buildSects(valley.heightAt, world.siteHeights, profile.name === 'high'), [valley, world, profile]);
   const builds = useMemo<Record<SiteKey, SectBuild>>(() => ({ ledge: sects.ledge, valley: sects.valley, lake: sects.lake }), [sects]);
 
   // hit proxies make hovering stable across gaps between pillars and roofs

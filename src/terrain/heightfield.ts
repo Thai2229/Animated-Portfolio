@@ -66,6 +66,80 @@ export function makeHeightAt(heights: Float32Array, n: number, worldSize: number
   };
 }
 
+// Thermal erosion pass over an m x m grid in place: material slides from any cell that stands higher than `talus`
+// (rise per world unit) above a neighbour, so needles and walls relax to a scree angle and pile up as concave aprons.
+function slump(C: Float32Array, m: number, spacing: number, talus: number, iters: number, rate: number) {
+  const d = new Float32Array(m * m);
+  const T = talus * spacing;
+  const off = [1, -1, m, -m, m + 1, -m - 1, m - 1, -m + 1];
+  const lim = [T, T, T, T, T * Math.SQRT2, T * Math.SQRT2, T * Math.SQRT2, T * Math.SQRT2];
+  for (let it = 0; it < iters; it++) {
+    d.fill(0);
+    for (let y = 1; y < m - 1; y++) {
+      for (let x = 1; x < m - 1; x++) {
+        const i = y * m + x;
+        let tot = 0;
+        let big = 0;
+        for (let k = 0; k < 8; k++) {
+          const df = C[i] - C[i + off[k]] - lim[k];
+          if (df > 0) {
+            tot += df;
+            if (df > big) big = df;
+          }
+        }
+        if (tot <= 0) continue;
+        const move = (big * rate) / 2;
+        for (let k = 0; k < 8; k++) {
+          const df = C[i] - C[i + off[k]] - lim[k];
+          if (df > 0) {
+            const q = (move * df) / tot;
+            d[i] -= q;
+            d[i + off[k]] += q;
+          }
+        }
+      }
+    }
+    for (let i = 0; i < d.length; i++) C[i] += d[i];
+  }
+}
+
+// Relaxes the macro shape on a block-averaged copy (about 256 cells across, so it stays cheap at any n) and adds the
+// change back, then a few full-resolution passes take the fine cliffs and spikes the coarse grid cannot see.
+function thermal(H: Float32Array, n: number, worldSize: number, talus: number, rate: number) {
+  const texel = worldSize / (n - 1);
+  const f = Math.max(1, Math.round(n / 256));
+  if (f > 1) {
+    const m = Math.floor(n / f);
+    const C = new Float32Array(m * m);
+    for (let y = 0; y < m; y++) {
+      for (let x = 0; x < m; x++) {
+        let acc = 0;
+        for (let j = 0; j < f; j++) for (let i = 0; i < f; i++) acc += H[(y * f + j) * n + x * f + i];
+        C[y * m + x] = acc / (f * f);
+      }
+    }
+    const before = Float32Array.from(C);
+    slump(C, m, texel * f, talus, Math.round(m / 24), rate);
+    for (let y = 0; y < n; y++) {
+      const fy = Math.min(m - 1.001, Math.max(0, (y + 0.5) / f - 0.5));
+      const yi = Math.floor(fy);
+      const ty = fy - yi;
+      for (let x = 0; x < n; x++) {
+        const fx = Math.min(m - 1.001, Math.max(0, (x + 0.5) / f - 0.5));
+        const xi = Math.floor(fx);
+        const tx = fx - xi;
+        const i = yi * m + xi;
+        const dd = (j: number) => C[j] - before[j];
+        H[y * n + x] +=
+          dd(i) * (1 - tx) * (1 - ty) + dd(i + 1) * tx * (1 - ty) + dd(i + m) * (1 - tx) * ty + dd(i + m + 1) * tx * ty;
+      }
+    }
+    slump(H, n, texel, talus, 4, rate);
+    return;
+  }
+  slump(H, n, texel, talus, Math.round(n / 24), rate);
+}
+
 export function generateHeightfield(opts: HeightfieldOptions) {
   const { n, worldSize, seed, erosionDroplets, onProgress } = opts;
   const { simplex2: simplex, fbm, ridged } = createNoise(7331 + seed);
@@ -79,8 +153,8 @@ export function generateHeightfield(opts: HeightfieldOptions) {
       let h = 1.2 + fbm(a * 0.05, b * 0.05, 4) * 1.6 + ridged(a * 0.09 + 3, b * 0.09, 5) * 1.6;
       const d = polyDist(a, b, RIDGE) + fbm(a * 0.08 + 7, b * 0.08, 3) * 4;
       const m = sstep(21, 3, d);
-      const peaks = 0.55 + 0.6 * ridged(a * 0.06 + 11, b * 0.06 - 4, 6);
-      h += Math.pow(m, 1.25) * 30 * peaks + m * ridged(a * 0.25, b * 0.25, 4) * 3.5;
+      const peaks = 0.55 + 0.6 * ridged(a * 0.06 + 11, b * 0.06 - 4, 4);
+      h += Math.pow(m, 1.25) * 30 * peaks + m * ridged(a * 0.25, b * 0.25, 3) * 1.1;
       for (const [ma, mb, mr, mh, sq] of MESAS) {
         const R = mr * 1.4;
         const dm = Math.hypot(a - ma, (b - mb) * sq) + fbm(a * 0.13 + ma, b * 0.13 + mb, 3) * R * 0.45;
@@ -170,6 +244,8 @@ export function generateHeightfield(opts: HeightfieldOptions) {
     }
     for (let i = 0; i < H.length; i++) H[i] *= HS;
   }
+  // 2a. relax needles and walls to a scree angle, leaving broad shoulders and concave aprons
+  thermal(H, n, worldSize, 0.7, 0.6);
 
   // 2b. terrace the land into stacked plateaus (flat tops, cliff risers)
   for (let y = 0; y < n; y++) {
@@ -183,12 +259,14 @@ export function generateHeightfield(opts: HeightfieldOptions) {
       const hn = h + fbm(wx * 0.045, wz * 0.045, 3) * 4.5 + simplex(wx * 0.16, wz * 0.16) * 0.9;
       const k = Math.floor(hn / tier);
       const f = hn / tier - k;
-      const sharp = 0.74 + 0.2 * (simplex(wx * 0.07 + 9, wz * 0.07) * 0.5 + 0.5);
+      const sharp = 0.55 + 0.2 * (simplex(wx * 0.07 + 9, wz * 0.07) * 0.5 + 0.5);
       const stepped = (k + sstep(sharp, 0.98, f)) * tier - (hn - h) * 0.35 + fbm(wx * 0.5, wz * 0.5, 2) * 0.2;
       const patch = sstep(-0.35, 0.3, fbm(wx * 0.04 + 20, wz * 0.04 - 7, 3));
       H[i] = lerp(h, stepped, sstep(1.5, 4, h) * (0.35 + 0.6 * patch));
     }
   }
+  // cliff bands only where terraces step; anything steeper than the rock can hold slumps
+  thermal(H, n, worldSize, 1.0, 0.6);
   // valley site height: mean of the surrounding ground, never below 0.8
   const V = SITES.valley;
   let acc = 0;

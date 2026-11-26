@@ -1,6 +1,9 @@
 // Buildings ported from the mock (vanilla three objects). Each sect gets its own material set so it can glow on hover.
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { A2W, SITES, LAKE, WATER_Y, type SiteKey } from '../terrain/layout';
+
+type V3 = [number, number, number];
 
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 const rnd = (() => {
@@ -20,6 +23,26 @@ function tileTexture(base: string, dark: string) {
     g.fillStyle = 'rgba(0,0,0,.18)';
     g.fillRect(0, y, 256, 2);
   }
+  // rounded cover tiles in columns, each course overlapping the one below
+  for (let x = 0; x < 256; x += 16) {
+    const cg = g.createLinearGradient(x, 0, x + 16, 0);
+    cg.addColorStop(0, 'rgba(0,0,0,.42)');
+    cg.addColorStop(0.3, 'rgba(0,0,0,0)');
+    cg.addColorStop(0.55, 'rgba(255,255,255,.14)');
+    cg.addColorStop(0.8, 'rgba(0,0,0,0)');
+    cg.addColorStop(1, 'rgba(0,0,0,.42)');
+    g.fillStyle = cg;
+    g.fillRect(x, 0, 16, 256);
+  }
+  for (let y = 0; y < 256; y += 32) {
+    const rg = g.createLinearGradient(0, y, 0, y + 14);
+    rg.addColorStop(0, 'rgba(0,0,0,.5)');
+    rg.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = rg;
+    g.fillRect(0, y, 256, 14);
+    g.fillStyle = 'rgba(255,255,255,.1)';
+    g.fillRect(0, y + 14, 256, 2);
+  }
   for (let i = 0; i < 400; i++) {
     g.fillStyle = `rgba(255,255,255,${rnd() * 0.06})`;
     g.fillRect(rnd() * 256, rnd() * 256, 4, 8);
@@ -27,6 +50,7 @@ function tileTexture(base: string, dark: string) {
   const t = new THREE.CanvasTexture(c);
   t.colorSpace = THREE.SRGBColorSpace;
   t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 4;
   return t;
 }
 function latticeTexture() {
@@ -76,6 +100,7 @@ function textures() {
       tileBlue: tileTexture('#2c4f7a', '#1a3050'),
       lattice: latticeTexture(),
       stone: stoneTexture(),
+      paving: stoneTexture(),
     };
   }
   return TEXS;
@@ -92,20 +117,99 @@ export function createMats() {
     lattice: std({ map: T.lattice, roughness: 0.8 }),
     plaster: std({ color: '#e4dccb', roughness: 0.9 }),
     stone: std({ map: T.stone, roughness: 0.95 }),
+    paving: std({ map: T.paving, roughness: 0.95 }),
     marble: std({ color: '#e8e4dc', roughness: 0.7 }),
     bracket: std({ color: '#2f5a5c', roughness: 0.7 }),
     gold: std({ color: '#c8a04a', roughness: 0.35, metalness: 0.6 }),
     wood: std({ color: '#6b4a32', roughness: 0.85 }),
     lantern: std({ color: '#d0402c', emissive: '#a02010', emissiveIntensity: 0.6, roughness: 0.6 }),
+    lanternGlow: std({ color: '#f2d9a0', emissive: '#ffae4a', emissiveIntensity: 0.75, roughness: 0.5 }),
+    door: std({ color: '#5d1b13', roughness: 0.6 }),
+    granite: std({ color: '#aaa598', roughness: 1 }),
+    bronze: std({ color: '#6e5a36', roughness: 0.45, metalness: 0.7 }),
+    leaf: std({ color: '#3f6d3a', roughness: 1, flatShading: true }),
+    leafLight: std({ color: '#5f8c44', roughness: 1, flatShading: true }),
   };
 }
 export type Mats = ReturnType<typeof createMats>;
 
 const mesh = (g: THREE.BufferGeometry, m: THREE.Material | THREE.Material[]) => new THREE.Mesh(g, m);
-const box = (w: number, h: number, d: number) => new THREE.BoxGeometry(w, h, d);
-const cyl = (rt: number, rb: number, h: number, s: number) => new THREE.CylinderGeometry(rt, rb, h, s);
+// primitives are shared by key: every sect is baked into a few merged meshes, so the sources are only read
+const prims = new Map<string, THREE.BufferGeometry>();
+const prim = (key: string, make: () => THREE.BufferGeometry) => {
+  let g = prims.get(key);
+  if (!g) {
+    g = make();
+    prims.set(key, g);
+  }
+  return g;
+};
+const box = (w: number, h: number, d: number) => prim(`b${w},${h},${d}`, () => new THREE.BoxGeometry(w, h, d));
+const cyl = (rt: number, rb: number, h: number, s: number) => prim(`c${rt},${rb},${h},${s}`, () => new THREE.CylinderGeometry(rt, rb, h, s));
+const cone = (r: number, h: number, s = 6) => prim(`n${r},${h},${s}`, () => new THREE.ConeGeometry(r, h, s));
+const sph = (r: number, ws = 8, hs = 6) => prim(`s${r},${ws},${hs}`, () => new THREE.SphereGeometry(r, ws, hs));
+const plane = (w: number, h: number) => prim(`p${w},${h}`, () => new THREE.PlaneGeometry(w, h));
+const Y_AXIS = new THREE.Vector3(0, 1, 0);
+const Z_AXIS = new THREE.Vector3(0, 0, 1);
 
-function builders(M: Mats) {
+// Bakes every single-material mesh under root into one mesh per material (and shadow flags): a sect is a handful
+// of draw calls however much detail it carries. Multi-material meshes (hall walls) stay as they are.
+export function mergeStatic(root: THREE.Object3D) {
+  root.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(root.matrixWorld).invert();
+  const rel = new THREE.Matrix4();
+  const buckets = new Map<string, { mat: THREE.Material; cast: boolean; recv: boolean; geos: THREE.BufferGeometry[] }>();
+  const baked: THREE.Mesh[] = [];
+  root.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh || Array.isArray(m.material)) return;
+    const key = `${m.material.uuid}${m.castShadow}${m.receiveShadow}`;
+    let b = buckets.get(key);
+    if (!b) {
+      b = { mat: m.material, cast: m.castShadow, recv: m.receiveShadow, geos: [] };
+      buckets.set(key, b);
+    }
+    b.geos.push(m.geometry.clone().applyMatrix4(rel.multiplyMatrices(inv, m.matrixWorld)));
+    baked.push(m);
+  });
+  baked.forEach((m) => m.removeFromParent());
+  for (const b of buckets.values()) {
+    const merged = mergeGeometries(b.geos, false);
+    b.geos.forEach((x) => x.dispose());
+    if (!merged) throw new Error('sect detail: mismatched geometry attributes');
+    const m = mesh(merged, b.mat);
+    m.castShadow = b.cast;
+    m.receiveShadow = b.recv;
+    m.raycast = () => {}; // hover and click use the hit proxy, not thousands of triangles
+    root.add(m);
+  }
+}
+
+function builders(M: Mats, fine: boolean) {
+  const put = (g: THREE.Object3D, geo: THREE.BufferGeometry, mat: THREE.Material, x: number, y: number, z: number, ry = 0) => {
+    const m = mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.rotation.y = ry;
+    g.add(m);
+    return m;
+  };
+  // thin square beam from a to b (t across, u deep)
+  const strut = (g: THREE.Object3D, a: V3, b: V3, mat: THREE.Material, t = 0.04, u = t) => {
+    const va = new THREE.Vector3(...a);
+    const vb = new THREE.Vector3(...b);
+    const m = mesh(box(t, u, 1), mat);
+    m.scale.z = va.distanceTo(vb);
+    m.position.copy(va).add(vb).multiplyScalar(0.5);
+    m.quaternion.setFromUnitVectors(Z_AXIS, vb.sub(va).normalize());
+    g.add(m);
+  };
+  // a cone or cylinder standing on `at`, its axis pointing along dir
+  const aimed = (g: THREE.Object3D, geo: THREE.BufferGeometry, mat: THREE.Material, at: V3, dir: V3) => {
+    const m = mesh(geo, mat);
+    m.position.set(...at);
+    m.quaternion.setFromUnitVectors(Y_AXIS, new THREE.Vector3(...dir).normalize());
+    g.add(m);
+  };
   // curved hip roof with upturned corners
   function hipRoof(w: number, d: number, h: number, mat: THREE.Material, lift = 0.35) {
     const g = new THREE.Group();
@@ -148,6 +252,37 @@ function builders(M: Mats) {
       orn.position.set((s * ridgeLen) / 2, h + 0.13, 0);
       orn.rotation.z = -s * 0.5;
       g.add(orn);
+      // owl-tail ridge ends: a tile block topped by a curled horn
+      put(g, box(0.08, 0.2, 0.11), M.tile, (s * (ridgeLen + 0.1)) / 2, h + 0.12, 0);
+      aimed(g, cone(0.035, 0.2, 5), M.gold, [(s * (ridgeLen + 0.1)) / 2 - s * 0.03, h + 0.3, 0], [-s * 0.5, 1, 0]);
+    });
+    // eaves: red fascia board following the upturned edge, round end tiles, horns on the corners
+    const edgeY = (u: number, v: number) => lift * Math.pow(Math.abs(u) * Math.abs(v), 3) + lift * 0.35;
+    const step = 0.1 + (1 - Number(fine)) * 0.14;
+    const nl = Math.max(4, Math.round(w / (step * 1.6)));
+    const ns = Math.max(3, Math.round(d / (step * 1.6)));
+    for (const sg of [-1, 1]) {
+      let pl: V3 | null = null;
+      let ps: V3 | null = null;
+      for (let i = 0; i <= nl; i++) {
+        const u = (i / nl) * 2 - 1;
+        const p: V3 = [(u * w) / 2, edgeY(u, sg) - 0.02, (sg * d) / 2 + sg * 0.012];
+        if (pl) strut(g, pl, p, M.red, 0.025, 0.07);
+        pl = p;
+        const tile = put(g, cyl(0.026, 0.026, 0.05, 6), M.gold, p[0], p[1], p[2] + sg * 0.02);
+        tile.rotation.x = (sg * Math.PI) / 2;
+      }
+      for (let i = 0; i <= ns; i++) {
+        const v = (i / ns) * 2 - 1;
+        const p: V3 = [(sg * w) / 2 + sg * 0.012, edgeY(sg, v) - 0.02, (v * d) / 2];
+        if (ps) strut(g, ps, p, M.red, 0.025, 0.07);
+        ps = p;
+        const tile = put(g, cyl(0.026, 0.026, 0.05, 6), M.gold, p[0] + sg * 0.02, p[1], p[2]);
+        tile.rotation.z = (-sg * Math.PI) / 2;
+      }
+    }
+    [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => {
+      aimed(g, cone(0.045, 0.22, 5), M.gold, [(sx * w) / 2, lift * 1.35 + 0.06, (sz * d) / 2], [sx * 0.7, 1, sz * 0.7]);
     });
     [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => {
       const a = new THREE.Vector3((sx * ridgeLen) / 2, h, 0);
@@ -156,12 +291,17 @@ function builders(M: Mats) {
       hip.position.copy(a).add(b).multiplyScalar(0.5);
       hip.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), b.clone().sub(a).normalize());
       g.add(hip);
+      [0.3, 0.5, 0.7].forEach((t) => {
+        const q = a.clone().lerp(b, t);
+        put(g, sph(0.03, 5, 4), M.gold, q.x, q.y + 0.045, q.z);
+      });
     });
     return g;
   }
 
   // polar roof (pagoda / round hall); corners > 0 gives an n-gon with upturned tips
   function polarRoof(r: number, h: number, mat: THREE.Material, corners = 0, lift = 0.25) {
+    const out = new THREE.Group();
     const n = 18;
     const segs = 48;
     const pos: number[] = [];
@@ -192,11 +332,139 @@ function builders(M: Mats) {
     geo.computeVertexNormals();
     const m = mesh(geo, mat);
     m.castShadow = m.receiveShadow = true;
-    return m;
+    out.add(m);
+    // raised tile ridges running down the roof (one per hip, or every 22.5 degrees on a round roof)
+    const nrib = corners || 16;
+    const onRoof = (th: number, rr: number): V3 => {
+      let k = 1;
+      let up = 0;
+      if (corners) {
+        k = 1 / Math.cos(((th + Math.PI / corners) % ((2 * Math.PI) / corners)) - Math.PI / corners);
+        up = Math.pow(Math.abs(Math.cos((th * corners) / 2)), 10) * lift * Math.pow(rr, 4);
+      }
+      return [Math.cos(th) * r * rr * k, h * Math.pow(1 - rr, 1.55) + up + 0.012, Math.sin(th) * r * rr * k];
+    };
+    for (let j = 0; j < nrib; j++) {
+      const th = (j / nrib) * Math.PI * 2;
+      for (let q = 0; q < 6; q++) strut(out, onRoof(th, 0.1 + q * 0.15), onRoof(th, 0.1 + (q + 1) * 0.15), mat, 0.03, 0.03);
+      if (corners) {
+        const tip = onRoof(th, 1);
+        aimed(out, cone(0.04, 0.2, 5), M.gold, [tip[0] * 1.01, tip[1] + 0.07, tip[2] * 1.01], [Math.cos(th) * 0.7, 1, Math.sin(th) * 0.7]);
+      }
+    }
+    // round end tiles along the rim
+    const nt = corners * 5 || 40;
+    for (let j = 0; j < nt && fine; j++) {
+      const th = ((j + 0.5) / nt) * Math.PI * 2;
+      const p = onRoof(th, 1);
+      aimed(out, cyl(0.024, 0.024, 0.05, 6), M.gold, [p[0], p[1] - 0.01, p[2]], [Math.cos(th), 0.15, Math.sin(th)]);
+    }
+    return out;
+  }
+
+  // pillar plinth plus the bracket set (dougong) that carries the eave: block, arm across the bay, cantilever outward
+  function pillar(g: THREE.Object3D, x: number, z: number, h: number, ox: number, oz: number) {
+    put(g, cyl(0.075, 0.09, 0.06, 8), M.granite, x, 0.03, z);
+    put(g, cyl(0.055, 0.055, 0.03, 8), M.bracket, x, h - 0.015, z);
+    if (!fine) return;
+    const turn = Math.abs(ox) * Math.PI / 2;
+    put(g, box(0.15, 0.05, 0.15), M.bracket, x, h + 0.02, z);
+    put(g, box(0.36, 0.035, 0.07), M.bracket, x, h + 0.07, z, turn);
+    put(g, box(0.07, 0.04, 0.32), M.bracket, x + ox * 0.14, h + 0.03, z + oz * 0.14, turn);
+    put(g, box(0.05, 0.03, 0.22), M.gold, x + ox * 0.26, h + 0.075, z + oz * 0.26, turn);
+  }
+
+  // flight of steps going down along local +z from the platform edge at (x, top, z0), with sloped side rails
+  function stairs(g: THREE.Object3D, x: number, top: number, z0: number, w: number, n: number, rise: number, run: number) {
+    for (let i = 0; i < n; i++) {
+      const hh = top - (i + 1) * rise + 0.12;
+      put(g, box(w, hh, run), M.marble, x, hh / 2 - 0.12 + 0.004, z0 + (i + 0.5) * run);
+    }
+    for (const sx of [-1, 1]) {
+      const rx = x + sx * (w / 2 + 0.05);
+      strut(g, [rx, top + 0.04, z0], [rx, 0.07, z0 + n * run], M.marble, 0.08, 0.07);
+      put(g, sph(0.05, 6, 4), M.marble, rx, top + 0.1, z0 - 0.02);
+    }
+  }
+
+  function bonsai(s = 1) {
+    const g = new THREE.Group();
+    put(g, cyl(0.1 * s, 0.075 * s, 0.1 * s, 8), M.bronze, 0, 0.05 * s, 0);
+    strut(g, [0, 0.1 * s, 0], [0.04 * s, 0.26 * s, 0.02 * s], M.wood, 0.03 * s);
+    for (const [x, y, z, r] of [[0.04, 0.3, 0.02, 0.1], [-0.07, 0.24, 0.0, 0.07], [0.12, 0.25, -0.03, 0.065]]) {
+      const c = put(g, sph(r * s, 6, 4), M.leaf, x * s, y * s, z * s);
+      c.scale.y = 0.7;
+    }
+    return g;
+  }
+
+  function pine(s = 1) {
+    const g = new THREE.Group();
+    put(g, cyl(0.03 * s, 0.045 * s, 0.4 * s, 5), M.wood, 0, 0.2 * s, 0);
+    [[0.3, 0.3, 0.3], [0.2, 0.55, 0.3], [0.12, 0.8, 0.27]].forEach(([r, y, hh], i) => {
+      put(g, cone(r * s, hh * s * 1.3, 7), M.leaf, 0, (y + 0.1) * s, 0, i);
+    });
+    return g;
+  }
+
+  function lion() {
+    const g = new THREE.Group();
+    put(g, box(0.22, 0.09, 0.3), M.granite, 0, 0.045, 0);
+    put(g, box(0.12, 0.11, 0.2), M.granite, 0, 0.145, -0.02);
+    put(g, sph(0.075, 7, 5), M.granite, 0, 0.2, 0.07);
+    put(g, sph(0.062, 7, 5), M.granite, 0, 0.27, 0.09);
+    put(g, sph(0.035, 6, 4), M.granite, 0.07, 0.115, 0.1);
+    for (const sx of [-1, 1]) {
+      aimed(g, cone(0.022, 0.05, 4), M.granite, [sx * 0.045, 0.335, 0.08], [sx * 0.3, 1, 0]);
+      put(g, cyl(0.014, 0.014, 0.1, 4), M.granite, sx * 0.04, 0.1, 0.13);
+    }
+    aimed(g, cone(0.03, 0.12, 5), M.granite, [0, 0.2, -0.14], [0, 0.6, -1]);
+    return g;
+  }
+  function lionPair(sep: number) {
+    const g = new THREE.Group();
+    for (const sx of [-1, 1]) {
+      const l = lion();
+      l.position.x = sx * sep;
+      g.add(l);
+    }
+    return g;
+  }
+
+  function incense() {
+    const g = new THREE.Group();
+    put(g, box(0.36, 0.06, 0.36), M.stone, 0, 0.03, 0);
+    for (let k = 0; k < 3; k++) {
+      const a = (k / 3) * Math.PI * 2;
+      put(g, cyl(0.03, 0.025, 0.12, 5), M.bronze, Math.cos(a) * 0.11, 0.12, Math.sin(a) * 0.11);
+    }
+    put(g, cyl(0.15, 0.11, 0.16, 12), M.bronze, 0, 0.26, 0);
+    const rim = put(g, new THREE.TorusGeometry(0.15, 0.015, 4, 12), M.gold, 0, 0.34, 0);
+    rim.rotation.x = Math.PI / 2;
+    for (const sx of [-1, 1]) {
+      const h = put(g, new THREE.TorusGeometry(0.035, 0.01, 4, 8), M.bronze, sx * 0.16, 0.32, 0);
+      h.rotation.y = Math.PI / 2;
+    }
+    put(g, cone(0.11, 0.1, 8), M.bronze, 0, 0.41, 0);
+    put(g, sph(0.03, 6, 4), M.gold, 0, 0.48, 0);
+    return g;
+  }
+
+  function well() {
+    const g = new THREE.Group();
+    put(g, cyl(0.27, 0.3, 0.26, 14), M.granite, 0, 0.13, 0);
+    put(g, cyl(0.2, 0.2, 0.02, 14), M.bracket, 0, 0.255, 0);
+    for (const sx of [-1, 1]) put(g, box(0.04, 0.5, 0.04), M.wood, sx * 0.3, 0.45, 0);
+    put(g, box(0.7, 0.04, 0.05), M.wood, 0, 0.7, 0);
+    put(g, cone(0.5, 0.2, 4), M.tile, 0, 0.82, 0, Math.PI / 4);
+    put(g, cyl(0.04, 0.035, 0.07, 6), M.wood, 0.05, 0.5, 0);
+    strut(g, [0.05, 0.69, 0], [0.05, 0.54, 0], M.wood, 0.01);
+    return g;
   }
 
   function podium(w: number, d: number, h: number, steps = true) {
     const g = new THREE.Group();
+    put(g, box(w + 0.36, 0.07, d + 0.4), M.stone, 0, 0.035, 0);
     const p = mesh(box(w, h, d), M.stone);
     p.position.y = h / 2;
     g.add(p);
@@ -211,6 +479,7 @@ function builders(M: Mats) {
         const b = mesh(post, M.marble);
         b.position.set(-w / 2 + (i * w) / posts, h + 0.08, z);
         g.add(b);
+        put(g, sph(0.032, 6, 4), M.marble, -w / 2 + (i * w) / posts, h + 0.19, z);
       }
     }
     const postsD = Math.round(d / 0.35);
@@ -219,6 +488,7 @@ function builders(M: Mats) {
         const b = mesh(post, M.marble);
         b.position.set(x, h + 0.08, -d / 2 + (i * d) / postsD);
         g.add(b);
+        put(g, sph(0.032, 6, 4), M.marble, x, h + 0.19, -d / 2 + (i * d) / postsD);
       }
     }
     [[w, -d / 2, 0], [w, d / 2, 0], [d, 0, -w / 2], [d, 0, w / 2]].forEach(([len, z, x], k) => {
@@ -237,6 +507,11 @@ function builders(M: Mats) {
         const st = mesh(box(w * 0.3, h / 5, 0.14), M.marble);
         st.position.set(0, h / 10 + (s * h) / 5, d / 2 + 0.07 + (4 - s) * 0.14);
         g.add(st);
+      }
+      for (const sx of [-1, 1]) {
+        const rx = sx * (w * 0.15 + 0.08);
+        strut(g, [rx, 0.05, d / 2 + 0.8], [rx, h + 0.04, d / 2 + 0.02], M.marble, 0.09, 0.07);
+        put(g, sph(0.055, 6, 4), M.marble, rx, h + 0.09, d / 2 - 0.01);
       }
     }
     g.traverse((o) => {
@@ -259,9 +534,12 @@ function builders(M: Mats) {
     const col = cyl(0.045, 0.05, h, 8);
     for (let i = 0; i <= nx; i++) {
       for (const z of [-d / 2, d / 2]) {
+        const x = -w / 2 + (i * w) / nx;
+        if (z > 0 && Math.abs(x) < 0.2 && w >= 1.5) continue; // the door bay stays open
         const c = mesh(col, M.red);
-        c.position.set(-w / 2 + (i * w) / nx, h / 2, z);
+        c.position.set(x, h / 2, z);
         g.add(c);
+        pillar(g, x, z, h, 0, Math.sign(z));
       }
     }
     for (let i = 1; i < nz; i++) {
@@ -269,6 +547,48 @@ function builders(M: Mats) {
         const c = mesh(col, M.red);
         c.position.set(x, h / 2, -d / 2 + (i * d) / nz);
         g.add(c);
+        pillar(g, x, -d / 2 + (i * d) / nz, h, Math.sign(x), 0);
+      }
+    }
+    // front: stone kick wall, transom rail, and a studded double door with a lintel plaque
+    const z0 = d / 2 - 0.1 + 0.012;
+    put(g, box(w - 0.2, h * 0.16, 0.03), M.granite, 0, h * 0.08, z0);
+    put(g, box(w - 0.2, 0.035, 0.035), M.wood, 0, h * 0.6, z0 + 0.004);
+    if (w >= 1.5) {
+      for (const sx of [-1, 1]) {
+        put(g, box(0.21, h * 0.62, 0.03), M.door, sx * 0.115, h * 0.31, z0 + 0.02);
+        put(g, box(0.03, h * 0.66, 0.045), M.wood, sx * 0.25, h * 0.33, z0 + 0.02);
+        for (const yy of [0.18, 0.34, 0.5]) {
+          for (const dx of [0.06, 0.17]) put(g, sph(0.014, 5, 4), M.gold, sx * dx, h * (yy + 0.04), z0 + 0.04);
+        }
+      }
+      put(g, box(0.56, 0.045, 0.05), M.wood, 0, h * 0.64 + 0.02, z0 + 0.02);
+      put(g, box(0.28, 0.07, 0.03), M.gold, 0, h * 0.64 + 0.09, z0 + 0.02);
+      put(g, box(0.7, 0.03, 0.18), M.marble, 0, 0.015, z0 + 0.1);
+    }
+    // side windows: lattice panes in wooden frames
+    for (const sx of [-1, 1]) {
+      for (const zz of [-d * 0.2, d * 0.2]) {
+        const wx = (sx * (w - 0.2)) / 2 + sx * 0.012;
+        put(g, plane(0.34, h * 0.42), M.lattice, wx, h * 0.55, zz, (sx * Math.PI) / 2);
+        for (const yy of [-1, 1]) put(g, box(0.03, 0.03, 0.4), M.wood, wx, h * 0.55 + yy * h * 0.21, zz);
+        for (const zo of [-1, 1]) put(g, box(0.03, h * 0.45, 0.03), M.wood, wx, h * 0.55, zz + zo * 0.185);
+      }
+    }
+    if (fine) {
+      // projecting rafter ends under the eave, and red paper lanterns at the front corners
+      const rs = 0.13;
+      for (let i = 0; i * rs <= w + 0.1; i++) {
+        for (const z of [-1, 1]) put(g, box(0.035, 0.035, 0.3), M.wood, -w / 2 - 0.05 + i * rs, h + 0.17, z * (d / 2 + 0.27));
+      }
+      for (let i = 0; i * rs <= d + 0.1; i++) {
+        for (const x of [-1, 1]) put(g, box(0.3, 0.035, 0.035), M.wood, x * (w / 2 + 0.27), h + 0.17, -d / 2 - 0.05 + i * rs);
+      }
+      for (const sx of [-1, 1]) {
+        strut(g, [sx * (w / 2 + 0.05), h + 0.1, d / 2 + 0.25], [sx * (w / 2 + 0.05), h - 0.06, d / 2 + 0.25], M.wood, 0.008);
+        const l = put(g, sph(0.065, 8, 6), M.lantern, sx * (w / 2 + 0.05), h - 0.14, d / 2 + 0.25);
+        l.scale.y = 1.25;
+        put(g, cyl(0.03, 0.03, 0.02, 6), M.gold, sx * (w / 2 + 0.05), h - 0.04, d / 2 + 0.25);
       }
     }
     const beam = mesh(box(w + 0.08, 0.12, d + 0.08), M.bracket);
@@ -332,6 +652,24 @@ function builders(M: Mats) {
       const br = mesh(cyl(s * 0.95, s * 0.95, 0.08, 8), M.bracket);
       br.position.y = y + hh + 0.04;
       g.add(br);
+      // lattice windows (a door on the ground storey), a balcony with a lotus-capped rail, and a bracket at every pillar
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * Math.PI * 2 + Math.PI / 8;
+        const apo = s * 0.84 * Math.cos(Math.PI / 8) + 0.008;
+        let pane = M.lattice;
+        if (i === 0 && k === 5) pane = M.door;
+        put(g, plane(s * 0.46, hh * 0.62), pane, Math.cos(a) * apo, y + hh * 0.52, Math.sin(a) * apo, Math.PI / 2 - a);
+        const vx = Math.cos(a + Math.PI / 8) * s;
+        const vz = Math.sin(a + Math.PI / 8) * s;
+        put(g, cyl(0.05, 0.06, 0.05, 6), M.granite, Math.cos(a) * s * 0.9, y + 0.025, Math.sin(a) * s * 0.9);
+        put(g, box(0.06, 0.05, 0.06), M.bracket, Math.cos(a) * s * 0.9, y + hh + 0.02, Math.sin(a) * s * 0.9);
+        put(g, cyl(0.014, 0.014, 0.13, 4), M.red, vx * 1.06, y + 0.065, vz * 1.06);
+        put(g, sph(0.025, 5, 4), M.gold, vx * 1.06, y + 0.14, vz * 1.06);
+      }
+      const bal = mesh(new THREE.TorusGeometry(s * 1.06, 0.012, 4, 8), M.marble);
+      bal.rotation.x = Math.PI / 2;
+      bal.position.y = y + 0.12;
+      g.add(bal);
       const roof = polarRoof(s * 1.55, 0.42, M.tile, 8, 0.22);
       roof.position.y = y + hh + 0.06;
       g.add(roof);
@@ -347,6 +685,18 @@ function builders(M: Mats) {
     const spire = mesh(cyl(0.02, 0.05, 1.0, 6), M.gold);
     spire.position.y = y + 0.4;
     g.add(spire);
+    // finial: lotus base, bowl, stacked wheels, water-flame; gilt chains run down to the eave tips
+    put(g, cyl(0.16, 0.2, 0.08, 8), M.granite, 0, y + 0.04, 0);
+    put(g, cyl(0.1, 0.14, 0.1, 8), M.gold, 0, y + 0.12, 0);
+    const bowl = put(g, sph(0.1, 8, 5), M.gold, 0, y + 0.18, 0);
+    bowl.scale.y = 0.6;
+    put(g, cone(0.045, 0.2, 6), M.gold, 0, y + 1.0, 0);
+    put(g, sph(0.035, 6, 4), M.gold, 0, y + 1.17, 0);
+    const topR = r * (1 - (levels - 1) * 0.09) * 1.55;
+    for (let k = 0; k < 8 && fine; k++) {
+      const a = (k / 8) * Math.PI * 2;
+      strut(g, [0, y + 0.85, 0], [Math.cos(a) * topR, y - 0.32 + 0.18 + 0.2, Math.sin(a) * topR], M.gold, 0.008);
+    }
     for (let k = 0; k < 5; k++) {
       const ring = mesh(new THREE.TorusGeometry(0.07 - k * 0.008, 0.015, 5, 12), M.gold);
       ring.rotation.x = Math.PI / 2;
@@ -372,6 +722,7 @@ function builders(M: Mats) {
         const p = mesh(pg, M.marble);
         p.position.set(Math.cos(a) * (R - 0.04), y + 0.3, Math.sin(a) * (R - 0.04));
         g.add(p);
+        if (k % 2 === 0) put(g, sph(0.03, 5, 4), M.marble, Math.cos(a) * (R - 0.04), y + 0.4, Math.sin(a) * (R - 0.04));
       }
       const rail = mesh(new THREE.TorusGeometry(R - 0.04, 0.02, 4, 64), M.marble);
       rail.rotation.x = Math.PI / 2;
@@ -388,6 +739,33 @@ function builders(M: Mats) {
       const c = mesh(cyl(0.04, 0.04, 0.7, 6), M.red);
       c.position.set(Math.cos(a) * 0.95, y + 0.35, Math.sin(a) * 0.95);
       g.add(c);
+      put(g, cyl(0.06, 0.07, 0.05, 8), M.granite, Math.cos(a) * 0.95, y + 0.025, Math.sin(a) * 0.95);
+      put(g, box(0.11, 0.05, 0.11), M.bracket, Math.cos(a) * 0.95, y + 0.72, Math.sin(a) * 0.95, Math.PI / 2 - a);
+      if (fine) {
+        put(g, box(0.05, 0.04, 0.2), M.bracket, Math.cos(a) * 1.05, y + 0.73, Math.sin(a) * 1.05, Math.PI / 2 - a);
+        put(g, box(0.04, 0.03, 0.12), M.gold, Math.cos(a) * 1.17, y + 0.77, Math.sin(a) * 1.17, Math.PI / 2 - a);
+      }
+      // latticed doors on the four axes
+      if (k % 4 === 0) {
+        const d = put(g, plane(0.34, 0.5), M.door, Math.cos(a) * 0.86, y + 0.3, Math.sin(a) * 0.86, Math.PI / 2 - a);
+        d.scale.x = 1;
+        put(g, box(0.42, 0.05, 0.05), M.gold, Math.cos(a) * 0.87, y + 0.58, Math.sin(a) * 0.87, Math.PI / 2 - a);
+      }
+    }
+    // four stairs climbing the three tiers, and paper lanterns round the lower eave
+    for (let k = 0; k < 4; k++) {
+      const f = new THREE.Group();
+      f.rotation.y = (k * Math.PI) / 2;
+      stairs(f, 0, 0.66, 1.5, 0.8, 6, 0.11, 0.3);
+      g.add(f);
+    }
+    for (let k = 0; fine && k < 12; k++) {
+      const a = (k / 12) * Math.PI * 2 + 0.13;
+      const lx = Math.cos(a) * 1.45;
+      const lz = Math.sin(a) * 1.45;
+      strut(g, [lx, y + 0.2, lz], [lx, y + 0.08, lz], M.wood, 0.008);
+      const l = put(g, sph(0.06, 8, 6), M.lantern, lx, y + 0.02, lz);
+      l.scale.y = 1.25;
     }
     y += 0.7;
     const sizes = [1.55, 1.15, 0.78];
@@ -408,6 +786,9 @@ function builders(M: Mats) {
     const fin = mesh(new THREE.SphereGeometry(0.12, 16, 12), M.gold);
     fin.position.y = y + 0.08;
     g.add(fin);
+    put(g, cyl(0.06, 0.12, 0.06, 12), M.granite, 0, y - 0.01, 0);
+    put(g, cone(0.04, 0.24, 8), M.gold, 0, y + 0.3, 0);
+    for (let k = 0; k < 3; k++) put(g, cyl(0.1 - k * 0.025, 0.1 - k * 0.025, 0.012, 12), M.gold, 0, y + 0.19 + k * 0.03, 0);
     return g;
   }
 
@@ -433,6 +814,17 @@ function builders(M: Mats) {
       base.position.set(mx, h * 0.85, mz);
       base.rotation.y = -ang;
       g.add(base);
+      put(g, box(len, 0.1, 0.2), M.granite, mx, 0.05, mz, -ang);
+      // red pilasters every ~1.2 units, a lattice vent between each pair
+      const np = Math.max(1, Math.round(len / 1.2));
+      for (let q = 0; q <= np; q++) {
+        const t = q / np - 0.5;
+        put(g, box(0.1, h + 0.06, 0.18), M.red, mx + Math.cos(ang) * len * t, (h + 0.06) / 2, mz + Math.sin(ang) * len * t, -ang);
+        if (q < np && fine) {
+          const t2 = (q + 0.5) / np - 0.5;
+          put(g, plane(0.5, 0.2), M.lattice, mx + Math.cos(ang) * len * t2 - Math.sin(ang) * 0.075, h * 0.5, mz + Math.sin(ang) * len * t2 + Math.cos(ang) * 0.075, -ang);
+        }
+      }
     }
     return g;
   }
@@ -451,6 +843,18 @@ function builders(M: Mats) {
     const plaque = mesh(box(0.6, 0.22, 0.04), M.gold);
     plaque.position.set(0, 1.12, 0.08);
     g.add(plaque);
+    // double door between the inner posts, plinths under every post, hanging lanterns
+    for (const sx of [-1, 1]) {
+      put(g, box(0.36, 0.95, 0.04), M.door, sx * 0.18, 0.5, 0);
+      for (const yy of [0.25, 0.5, 0.75]) put(g, sph(0.018, 5, 4), M.gold, sx * 0.1, yy, 0.03);
+      put(g, cyl(0.1, 0.12, 0.08, 8), M.granite, (sx * w) / 2, 0.04, 0);
+      put(g, cyl(0.1, 0.12, 0.08, 8), M.granite, sx * 0.35 * w / 2, 0.04, 0);
+      const l = put(g, sph(0.07, 8, 6), M.lantern, sx * w * 0.3, 1.0, 0.12);
+      l.scale.y = 1.25;
+      strut(g, [sx * w * 0.3, 1.23, 0.12], [sx * w * 0.3, 1.08, 0.12], M.wood, 0.008);
+    }
+    put(g, box(0.9, 0.03, 0.2), M.marble, 0, 0.015, 0.06);
+    stairs(g, 0, 0.12, 0.14, 0.9, 2, 0.06, 0.16);
     const r1 = hipRoof(w * 0.75, 0.55, 0.28, M.tile, 0.16);
     r1.position.y = 1.4;
     g.add(r1);
@@ -462,14 +866,23 @@ function builders(M: Mats) {
     return g;
   }
 
+  const flagMats = new Map<string, THREE.MeshStandardMaterial>();
   function banner(color: string) {
     const g = new THREE.Group();
     const pole = mesh(cyl(0.02, 0.02, 1.6, 5), M.wood);
     pole.position.y = 0.8;
     g.add(pole);
+    put(g, cyl(0.07, 0.09, 0.08, 6), M.granite, 0, 0.04, 0);
+    put(g, sph(0.035, 6, 4), M.gold, 0, 1.62, 0);
+    put(g, box(0.4, 0.02, 0.02), M.wood, 0.17, 1.56, 0);
+    let fm = flagMats.get(color);
+    if (!fm) {
+      fm = std({ color, side: THREE.DoubleSide, roughness: 0.8 });
+      flagMats.set(color, fm);
+    }
     const flag = mesh(
       new THREE.PlaneGeometry(0.32, 0.9, 1, 6),
-      std({ color, side: THREE.DoubleSide, roughness: 0.8 }),
+      fm,
     );
     const p = flag.geometry.attributes.position;
     for (let i = 0; i < p.count; i++) p.setZ(i, Math.sin(p.getY(i) * 6) * 0.04);
@@ -479,15 +892,33 @@ function builders(M: Mats) {
     return g;
   }
 
+  // stone lantern with a softly lit window (emissive material, no real light)
   function lantern() {
     const g = new THREE.Group();
-    const l = mesh(cyl(0.06, 0.06, 0.12, 8), M.lantern);
-    l.position.y = 0.06;
-    g.add(l);
+    put(g, box(0.16, 0.05, 0.16), M.granite, 0, 0.025, 0);
+    put(g, cyl(0.03, 0.04, 0.2, 6), M.granite, 0, 0.15, 0);
+    put(g, box(0.14, 0.03, 0.14), M.granite, 0, 0.265, 0);
+    put(g, box(0.1, 0.1, 0.1), M.lanternGlow, 0, 0.33, 0);
+    put(g, cone(0.13, 0.09, 4), M.granite, 0, 0.43, 0, Math.PI / 4);
+    put(g, sph(0.025, 6, 4), M.granite, 0, 0.49, 0);
+    g.scale.setScalar(0.85);
     return g;
   }
 
-  return { hipRoof, polarRoof, hall, pagoda, roundTemple, wallLoop, gate, banner, lantern, podium };
+  // railing along a polyline: posts with lotus caps and two rails
+  function railing(g: THREE.Object3D, pts: V3[], h = 0.3) {
+    pts.forEach((p, i) => {
+      put(g, box(0.045, h, 0.045), M.marble, p[0], p[1] + h / 2, p[2]);
+      put(g, sph(0.032, 6, 4), M.marble, p[0], p[1] + h + 0.02, p[2]);
+      if (i > 0) {
+        const q = pts[i - 1];
+        strut(g, [q[0], q[1] + h * 0.9, q[2]], [p[0], p[1] + h * 0.9, p[2]], M.marble, 0.03);
+        strut(g, [q[0], q[1] + h * 0.45, q[2]], [p[0], p[1] + h * 0.45, p[2]], M.marble, 0.02);
+      }
+    });
+  }
+
+  return { hipRoof, polarRoof, hall, pagoda, roundTemple, wallLoop, gate, banner, lantern, podium, bonsai, pine, lionPair, incense, well, stairs, railing, put, strut, aimed };
 }
 
 export type SectBuild = {
@@ -498,7 +929,7 @@ export type SectBuild = {
 // facing the camera: -45deg puts a hall's front (local +z) toward the viewer
 const FACE = -45 + 180;
 
-export function buildSects(heightAt: (x: number, z: number) => number, siteHeights: Record<SiteKey, number>) {
+export function buildSects(heightAt: (x: number, z: number) => number, siteHeights: Record<SiteKey, number>, fine = true) {
   const placeA = (group: THREE.Group, obj: THREE.Object3D, a: number, b: number, yOff = 0, rotDeg = 0) => {
     const w = A2W(a, b);
     obj.position.set(w.x, heightAt(w.x, w.z) + yOff, w.z);
@@ -506,7 +937,24 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     group.add(obj);
     return obj;
   };
+  type Props = ReturnType<typeof builders>;
+  // a lion pair and two bonsai at the foot of a hall's steps, in the hall's own frame
+  const frontProps = (g: THREE.Group, B: Props, a: number, b: number, rot: number, w: number, d: number) => {
+    const f = new THREE.Group();
+    const lions = B.lionPair(w * 0.22 + 0.2);
+    lions.position.z = d / 2 + 1.35;
+    f.add(lions);
+    if (fine) {
+      for (const sx of [-1, 1]) {
+        const t = B.bonsai(1.1);
+        t.position.set(sx * (w * 0.5 + 0.55), 0, d / 2 + 0.6);
+        f.add(t);
+      }
+    }
+    placeA(g, f, a, b, 0, rot);
+  };
   const collect = (group: THREE.Group, M: Mats): SectBuild => {
+    mergeStatic(group);
     const set = new Set<THREE.MeshStandardMaterial>(Object.values(M));
     group.traverse((o) => {
       const m = (o as THREE.Mesh).material;
@@ -519,12 +967,32 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
   // Sect I: Swift Wind Pagoda on the massif ledge (blue banners)
   const ledge = (() => {
     const M = createMats();
-    const B = builders(M);
+    const B = builders(M, fine);
     const g = new THREE.Group();
     const base = SITES.ledge;
+    // flagstone terrace with a rim, so the ledge reads as built ground
+    M.paving.map!.repeat.set(5, 5);
+    M.paving.color.set('#a9a498');
+    placeA(g, mesh(cyl(3.5, 3.6, 0.05, 48), M.paving), base.a, base.b, 0.025);
+    placeA(g, mesh(cyl(3.68, 3.68, 0.09, 48), M.granite), base.a, base.b, 0.0);
     placeA(g, B.pagoda(5, 0.8), base.a + 1.6, base.b + 0.6);
     placeA(g, B.hall({ w: 2.6, d: 1.5, h: 0.75 }), base.a - 1.5, base.b + 0.9, 0, FACE);
     placeA(g, B.hall({ w: 1.6, d: 1.1, h: 0.6 }), base.a - 2.2, base.b - 1.8, 0, FACE + 90);
+    frontProps(g, B, base.a - 1.5, base.b + 0.9, FACE, 2.6, 1.5);
+    placeA(g, B.incense(), base.a + 0.1, base.b - 0.4, 0.05);
+    placeA(g, B.pine(1.5), base.a - 3.5, base.b + 2.6, 0);
+    placeA(g, B.pine(1.2), base.a + 3.5, base.b - 0.6, 0);
+    placeA(g, B.pine(1.0), base.a + 3.0, base.b + 3.0, 0);
+    // low railing along the cliff-side edge of the terrace
+    const rail: V3[] = [];
+    for (let t = Math.PI * 0.92; t <= Math.PI * 2.08; t += 0.09) {
+      const pa = base.a + Math.cos(t) * 3.45;
+      const pb = base.b + Math.sin(t) * 3.45;
+      if (Math.hypot(pa - (base.a + 1.0), pb - (base.b - 3.4)) < 1.5 || Math.hypot(pa - (base.a - 0.2), pb - (base.b - 3.6)) < 0.5) continue;
+      const w = A2W(pa, pb);
+      rail.push([w.x, siteHeights.ledge + 0.05, w.z]);
+    }
+    B.railing(g, rail, 0.3);
     const pav = new THREE.Group();
     [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]].forEach(([x, z]) => {
       const c = mesh(cyl(0.04, 0.04, 0.8, 6), M.red);
@@ -536,6 +1004,15 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     pr.position.y = 0.82;
     pav.add(pr);
     pav.add(mesh(box(1.2, 0.08, 1.2), M.wood));
+    B.put(pav, box(1.5, 0.06, 1.5), M.granite, 0, 0.01, 0);
+    B.put(pav, sph(0.07, 6, 4), M.gold, 0, 1.3, 0);
+    B.put(pav, cone(0.04, 0.2, 6), M.gold, 0, 1.43, 0);
+    [-0.5, 0.5].forEach((q) => {
+      B.put(pav, box(1.0, 0.03, 0.03), M.red, 0, 0.3, q);
+      B.put(pav, box(0.03, 0.03, 1.0), M.red, q, 0.3, 0);
+      B.put(pav, box(1.0, 0.03, 0.03), M.red, 0, 0.62, q);
+      B.put(pav, box(0.03, 0.03, 1.0), M.red, q, 0.62, 0);
+    });
     placeA(g, pav, base.a + 1.0, base.b - 3.4, 0.05, 0);
     [[base.a - 3.4, base.b - 0.2], [base.a + 3.2, base.b + 2.2], [base.a - 0.2, base.b - 3.6]].forEach(([a, b]) =>
       placeA(g, B.banner('#2f5f9a'), a, b),
@@ -547,7 +1024,7 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
   // Sect II: Hundred Disciplines Hall on the valley floor (red banners)
   const valley = (() => {
     const M = createMats();
-    const B = builders(M);
+    const B = builders(M, fine);
     const outer = new THREE.Group();
     const g = new THREE.Group();
     const base = SITES.valley;
@@ -571,14 +1048,36 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     yard.position.set(0, 0.03, 0.4);
     yard.receiveShadow = true;
     g.add(yard);
-    const incense = mesh(cyl(0.22, 0.28, 0.35, 12), M.gold);
-    incense.position.set(0, 0.2, 0.2);
+    const incense = B.incense();
+    incense.position.set(0, 0.05, 1.0);
     g.add(incense);
     g.add(B.wallLoop([[-3.7, -3.6], [3.7, -3.6], [3.7, 4.0], [-3.7, 4.0]]));
     const gt = B.gate(2.2);
     gt.position.set(0, 0, 4.9);
     g.add(gt);
-    [[-1.6, 1.6], [1.6, 1.6], [-1.6, -0.6], [1.6, -0.6]].forEach(([x, z]) => {
+    // courtyard life: a well, bonsai, old pines against the back wall, and stone lions guarding the gate
+    const wl = B.well();
+    wl.position.set(-2.8, 0.05, 2.9);
+    g.add(wl);
+    [[2.8, 2.9, 1.2], [-1.0, 2.0, 0.9], [1.0, 2.0, 0.9]].forEach(([x, z, k]) => {
+      const t = B.bonsai(k);
+      t.position.set(x, 0.05, z);
+      g.add(t);
+    });
+    [[-3.0, -2.9, 1.5], [3.0, -2.9, 1.4]].forEach(([x, z, k]) => {
+      const t = B.pine(k);
+      t.position.set(x, 0, z);
+      g.add(t);
+    });
+    const gl = B.lionPair(1.1);
+    gl.position.set(0, 0, 5.9);
+    g.add(gl);
+    [0.35, 1.7].forEach((z) => {
+      const slab = mesh(box(0.7, 0.04, 0.45), M.marble);
+      slab.position.set(0, 0.06, z + 0.55);
+      g.add(slab);
+    });
+    [[-0.95, 2.0], [0.95, 2.0], [-0.95, -0.5], [0.95, -0.5]].forEach(([x, z]) => {
       const l = B.lantern();
       l.position.set(x, 0.05, z);
       g.add(l);
@@ -597,10 +1096,20 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
   // Sect III: Heavenly Balance Temple on the lake tier (gold banners), water pavilion, stair and zigzag bridge
   const lake = (() => {
     const M = createMats();
-    const B = builders(M);
+    const B = builders(M, fine);
     const g = new THREE.Group();
     const base = SITES.lake;
-    placeA(g, B.roundTemple(), base.a, base.b, 0, 0);
+    // turned 45 degrees so one of its four stairs faces the viewer; lions and a pair of pines flank that stair
+    placeA(g, B.roundTemple(), base.a, base.b, 0, 45);
+    const lions = new THREE.Group();
+    const pair = B.lionPair(0.75);
+    pair.position.z = 3.75;
+    lions.add(pair);
+    placeA(g, lions, base.a, base.b, 0, 225);
+    placeA(g, B.pine(1.4), base.a - 3.6, base.b + 2.0, 0);
+    placeA(g, B.pine(1.1), base.a + 3.7, base.b - 1.2, 0);
+    placeA(g, B.bonsai(1.3), base.a - 1.8, base.b + 2.7, 0);
+    [[-3.3, -1.5], [-3.3, 0.3]].forEach(([da, db]) => placeA(g, B.lantern(), base.a + da, base.b + db));
     placeA(g, B.hall({ w: 1.8, d: 1.0, h: 0.55, roofMat: M.tileGreen }), base.a + 2.6, base.b + 1.4, 0, FACE + 30);
     placeA(g, B.hall({ w: 1.5, d: 0.9, h: 0.5, roofMat: M.tileGreen }), base.a + 1.6, base.b + 3.0, 0, FACE + 60);
     const pav = new THREE.Group();
@@ -616,6 +1125,16 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     const pr = B.polarRoof(1.35, 0.6, M.tileGreen, 6, 0.25);
     pr.position.y = 0.88;
     pav.add(pr);
+    // rails between the pavilion pillars, and a gilt finial
+    const pillarsAt: V3[] = [];
+    for (let k = 0; k <= 6; k++) {
+      const a = (k / 6) * Math.PI * 2;
+      pillarsAt.push([Math.cos(a) * 0.8, 0.16, Math.sin(a) * 0.8]);
+    }
+    B.railing(pav, pillarsAt.slice(0, 4), 0.35);
+    B.railing(pav, pillarsAt.slice(4), 0.35);
+    B.put(pav, sph(0.07, 6, 4), M.gold, 0, 1.52, 0);
+    B.put(pav, cone(0.04, 0.22, 6), M.gold, 0, 1.68, 0);
     const lw = A2W(LAKE.a + 1.5, LAKE.b + 0.5);
     pav.position.set(lw.x, WATER_Y, lw.z);
     g.add(pav);
@@ -634,6 +1153,22 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
         g.add(st);
       }
     }
+    // rails down both sides of the stair
+    {
+      const s0 = A2W(base.a - 3.2, base.b - 0.6);
+      const s1 = A2W(base.a - 6.0, base.b - 1.4);
+      const len = Math.hypot(s1.x - s0.x, s1.z - s0.z);
+      const px = -(s1.z - s0.z) / len;
+      const pz = (s1.x - s0.x) / len;
+      for (const side of [-1, 1]) {
+        const pts: V3[] = [];
+        for (let k = 0; k <= 5; k++) {
+          const t = k / 5;
+          pts.push([lerp(s0.x, s1.x, t) + px * side * 0.5, lerp(siteHeights.lake, WATER_Y + 0.3, t) + 0.12, lerp(s0.z, s1.z, t) + pz * side * 0.5]);
+        }
+        B.railing(g, pts, 0.32);
+      }
+    }
     const zig = [[base.a - 6.0, base.b - 1.4], [base.a - 6.8, base.b - 2.4], [base.a - 7.6, base.b - 1.4], [LAKE.a + 2.4, LAKE.b + 0.6]];
     for (let i = 0; i < zig.length - 1; i++) {
       const p = A2W(zig[i][0], zig[i][1]);
@@ -648,6 +1183,16 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
         const pil = mesh(cyl(0.05, 0.05, 0.5, 6), M.stone);
         pil.position.set(lerp(p.x, q.x, t), WATER_Y, lerp(p.z, q.z, t));
         g.add(pil);
+      }
+      const nx = -(q.z - p.z) / len;
+      const nz = (q.x - p.x) / len;
+      for (const side of [-1, 1]) {
+        const pts: V3[] = [];
+        for (let k = 0; k <= 3; k++) {
+          const t = k / 3;
+          pts.push([lerp(p.x, q.x, t) + nx * side * 0.2, WATER_Y + 0.32, lerp(p.z, q.z, t) + nz * side * 0.2]);
+        }
+        B.railing(g, pts, 0.28);
       }
     }
     [[base.a + 0.5, base.b - 3.2], [base.a + 3.4, base.b - 1.4], [base.a - 2.2, base.b + 2.6]].forEach(([a, b]) =>
