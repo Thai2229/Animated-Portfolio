@@ -35,4 +35,3 @@ Add `?quality=low` or `?quality=high` to the URL to override the automatic quali
 ## Notes
 
 - `eslint.config.mjs` does not use `eslint-config-next`, because it loads typescript-eslint, which does not support the pinned TypeScript 7. ESLint parses TypeScript with Babel; types are checked with `npx tsc --noEmit`.
-- Two tests (`tests/layout.test.ts` "defines the three sites" and `tests/sects.test.ts` "uses each site exactly once") compare `.sort()` output with `['ledge', 'lake', 'valley']`, which is not sorted ("lake" comes before "ledge"), so they cannot pass as written.

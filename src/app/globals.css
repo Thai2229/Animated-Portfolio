@@ -79,7 +79,7 @@ a { color: inherit; }
 
 .doc { position: fixed; inset: 0; overflow: auto; padding: 120px 44px; background: linear-gradient(180deg, #1a2229, #11161b); }
 .doc h1 { font-family: "Cormorant Garamond", serif; font-weight: 500; font-size: 56px; margin: 22px 0 16px; }
-.doc p { max-width: 520px; line-height: 1.7; opacity: .9; }
+.doc p { max-width: 520px; line-height: 1.7; opacity: .9; margin-bottom: 16px; }
 .doc .home { font-size: 11px; letter-spacing: .3em; text-transform: uppercase; text-decoration: none; color: #e0b36a; }
 
 @media (max-width: 899px) {
