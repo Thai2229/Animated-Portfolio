@@ -150,7 +150,7 @@ export function createValley(world: WorldData, profile: Profile): ValleyScene {
   const fx = profile.fx;
   group.add(createBillboards({ kind: 'SPRAY', count: Math.round(900 * fx), origin: impact, side, dir, spread: 2.2, seed: 21 }, shared));
   group.add(createBillboards({ kind: 'SPRAY', count: Math.round(140 * fx), origin: lip, side, dir, spread: 1.8, seed: 33 }, shared));
-  group.add(createBillboards({ kind: 'MIST', count: Math.round(70 * fx) + 20, origin: mistAt, side, dir, spread: 4, seed: 57 }, shared));
+  group.add(createBillboards({ kind: 'MIST', count: Math.round(70 * fx) + 20, origin: mistAt, side, dir, spread: 2.4, seed: 57 }, shared));
   group.add(createPool(impact, 7, shared));
   group.add(createRiver(RIVER.map(([a, b]) => {
     const w = A2W(a, b);

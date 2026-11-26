@@ -83,10 +83,10 @@ export function makeRockTextures(size: number, octaves: number, seed = 11): Rock
       const u = x / size;
       const v = y / size;
       // domain warp keeps the blocks from looking like a grid
-      const wu = u + (tileFbm(u, v, 3, 3, 2, seed + 40) - 0.5) * 0.06;
-      const wv = v + (tileFbm(u, v, 3, 3, 2, seed + 50) - 0.5) * 0.06;
-      const blocks = cells(wu, wv, 4, 8, seed);
-      const slabs = cells(wu, wv, 2, 3, seed + 9);
+      const wu = u + (tileFbm(u, v, 3, 3, 2, seed + 40) - 0.5) * 0.16;
+      const wv = v + (tileFbm(u, v, 3, 3, 2, seed + 50) - 0.5) * 0.16;
+      const blocks = cells(wu, wv, 3, 4, seed);
+      const slabs = cells(wu, wv, 2, 2, seed + 9);
       const edge = blocks.f2 - blocks.f1;
       const big = slabs.f2 - slabs.f1;
       const body = tileFbm(u, v, 4, 4, octaves, seed + 3);

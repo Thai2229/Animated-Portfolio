@@ -85,6 +85,18 @@ export function buildWorld(profile: Profile, report: (stage: string, fraction: n
     return [-dX / l, 1 / l, -dZ / l];
   };
 
+  // normal of the box-blurred height: smooth, no gullies
+  const nrmBlurAt = (x: number, y: number) => {
+    const xl = Math.max(0, x - 1);
+    const xr = Math.min(n - 1, x + 1);
+    const yu = Math.max(0, y - 1);
+    const yd = Math.min(n - 1, y + 1);
+    const dX = (blur[y * n + xr] - blur[y * n + xl]) / ((xr - xl) * texel);
+    const dZ = (blur[yd * n + x] - blur[yu * n + x]) / ((yd - yu) * texel);
+    const l = Math.hypot(dX, 1, dZ);
+    return [-dX / l, 1 / l, -dZ / l];
+  };
+
   // where grass grows: flat, dry, clear of courtyards and paths (also drives the blades)
   const GRASS = new Float32Array(n * n);
   for (let y = 1; y < n - 1; y++) {
@@ -170,14 +182,20 @@ export function buildWorld(profile: Profile, report: (stage: string, fraction: n
       if (h < 0.6) c = mixc(c, mixc(sand, wet, sstep(0.6, -0.4, h)), sstep(0.6, 0.1, h));
       VEG[i] = 0;
       if (h > 0.5) VEG[i] = veg * gentle;
-      const ndl = Math.max(0, nx * sun.x + ny * sun.y + nz * sun.z);
-      // baked shadow smears down vertical faces too: soften it on steep rock, keep it crisp on gentle ground
-      const sh = 1 - (1 - shadow[i]) * (0.5 + 0.5 * sstep(0.3, 0.7, ny));
-      // cavity AO from the blurred height smears down vertical faces, so fade it out on steep rock
-      const ao = 1 - (0.5 - 0.5 * sstep(-1, 0.4, cav)) * (0.3 + 0.7 * gentle);
+      // steep rock: no baked shadow or cavity (they smear down the walls as dark stripes), a gully-free normal,
+      // and a floor of 0.75 of the fully lit value so the triplanar rock carries the look
+      const steep = 1 - sstep(0.5, 0.8, ny);
+      const ndlRaw = Math.max(0, nx * sun.x + ny * sun.y + nz * sun.z);
+      const bn = nrmBlurAt(xi, yi);
+      const ndlSmooth = Math.max(0, bn[0] * sun.x + bn[1] * sun.y + bn[2] * sun.z);
+      const ndl = lerp(ndlRaw, ndlSmooth, steep);
+      const sh = 1 - (1 - shadow[i]) * (1 - steep);
+      const ao = 1 - (0.5 - 0.5 * sstep(-1, 0.4, cav)) * (1 - steep);
       const o = (ty * TEX + tx) * 4;
       for (let k = 0; k < 3; k++) {
-        const lit = (c[k] / 255) * (skyC[k] * ao * (0.6 + 0.4 * ny) + sunC[k] * ndl * sh) * (1 + gentle * 0.14 * (fine2 - 0.5));
+        const full = skyC[k] * (0.6 + 0.4 * bn[1]) + sunC[k] * ndlSmooth;
+        const L = skyC[k] * ao * (0.6 + 0.4 * ny) + sunC[k] * ndl * sh;
+        const lit = (c[k] / 255) * lerp(L, Math.max(L, 0.75 * full), steep) * (1 + gentle * 0.14 * (fine2 - 0.5));
         albedo[o + k] = Math.min(255, Math.pow(lit, 1 / 1.06) * 255);
       }
       albedo[o + 3] = 255;

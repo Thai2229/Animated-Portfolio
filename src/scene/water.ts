@@ -117,7 +117,7 @@ void main() {
     c = uOrigin + uSide * (aSeed.y - 0.5) * uSpread + uDir * (aSeed.z - 0.5) * uSpread * 0.6;
     c.y += 0.3 + t * (0.1 + aSeed.w * 0.08);
     c += (uDir * 0.7 + uSide * (aSeed.y - 0.5) * 0.5) * t * 0.05 + vec3(sin(t * 0.5 + aSeed.x * 20.0), 0.0, cos(t * 0.43 + aSeed.y * 20.0)) * 0.25;
-    size = (1.3 + aSeed.w * 2.4) * (0.6 + ph * 0.9);
+    size = (0.9 + aSeed.w * 1.5) * (0.6 + ph * 0.8);
     a = sin(ph * 3.14159);
   #else
     float life = 0.9 + aSeed.y * 0.8;
@@ -150,7 +150,7 @@ void main() {
   float d = length(vUv);
   float a = smoothstep(1.0, 0.15, d) * vA;
   #ifdef MIST
-    gl_FragColor = vec4(0.96, 0.98, 1.0, a * 0.22);
+    gl_FragColor = vec4(0.96, 0.98, 1.0, a * 0.13);
   #else
     gl_FragColor = vec4(0.82, 0.92, 1.0, a * 0.9);
   #endif
