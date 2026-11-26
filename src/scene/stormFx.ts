@@ -37,10 +37,11 @@ void main() {
 `;
 
 const FLAME_BODY = /* glsl */ `
-  float r = (1.0 - life * 0.7) * 0.3 * uScale * 2.2;
-  p += vec3((aRnd.y - 0.5) * 2.0 * r, life * (0.5 + aRnd.z) * 1.1, (aRnd.z - 0.5) * 2.0 * r);
-  p.x += sin(uTime * 7.0 + aRnd.x * 40.0) * 0.06 * life;
-  size = (0.5 + 0.5 * aRnd.w) * (1.0 - life) * 0.7 * (0.4 + 0.6 * uBurn);
+  float r = (1.0 - life * 0.8) * 0.3 * uScale * 3.0;
+  p.y -= 0.45 * uScale;
+  p += vec3((aRnd.y - 0.5) * 2.0 * r, life * (0.5 + aRnd.z) * 1.7, (aRnd.z - 0.5) * 2.0 * r);
+  p.x += sin(uTime * 7.0 + aRnd.x * 40.0) * 0.1 * life;
+  size = (0.7 + 0.6 * aRnd.w) * sin(life * 3.14159 * 0.85 + 0.25) * 0.7 * (0.4 + 0.6 * uBurn);
 `;
 const SPARK_BODY = /* glsl */ `
   float t = life * 2.2;
@@ -49,8 +50,8 @@ const SPARK_BODY = /* glsl */ `
   size = 0.1 * (1.0 - life);
 `;
 const SMOKE_BODY = /* glsl */ `
-  p += vec3(life * 3.2 + (aRnd.y - 0.5) * 0.5, 0.5 + life * 5.0, life * 1.6 + (aRnd.z - 0.5) * 0.5);
-  size = 0.8 + life * 2.6;
+  p += vec3(life * 3.2 + (aRnd.y - 0.5) * 0.5, 1.2 + life * 5.0, life * 1.6 + (aRnd.z - 0.5) * 0.5);
+  size = 1.0 + life * 3.2;
 `;
 
 const FRAG = /* glsl */ `
@@ -64,14 +65,19 @@ void main() {
 }
 `;
 const FLAME_COLOR = /* glsl */ `
-  vec3 c = mix(vec3(1.0, 0.82, 0.32), vec3(0.85, 0.2, 0.04), vLife);
-  gl_FragColor = vec4(c, soft * soft * (1.0 - vLife) * 0.55);
+  // teardrop tongue (point coord y is 0 at the top): orange body, yellow core, red as it dies
+  float hw = mix(0.12, 0.7, gl_PointCoord.y);
+  float fx = abs(gl_PointCoord.x - 0.5) * 2.0 / hw;
+  float tear = (1.0 - smoothstep(0.35, 1.0, fx)) * smoothstep(0.0, 0.12, gl_PointCoord.y) * (1.0 - smoothstep(0.85, 1.0, gl_PointCoord.y));
+  vec3 c = mix(vec3(1.0, 0.36, 0.04), vec3(1.0, 0.85, 0.3), tear * tear * 0.5);
+  c = mix(c, vec3(0.7, 0.1, 0.02), smoothstep(0.75, 1.0, vLife));
+  gl_FragColor = vec4(c, tear * (1.0 - vLife * vLife) * 0.3);
 `;
 const SPARK_COLOR = /* glsl */ `
   gl_FragColor = vec4(1.0, 0.75, 0.3, soft * (1.0 - vLife));
 `;
 const SMOKE_COLOR = /* glsl */ `
-  gl_FragColor = vec4(vec3(0.16, 0.15, 0.14), soft * sin(vLife * 3.14159) * 0.4);
+  gl_FragColor = vec4(vec3(0.08, 0.075, 0.07), soft * sin(vLife * 3.14159) * 0.6);
 `;
 
 export type StormFx = {
@@ -119,44 +125,58 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     clouds.push({ s: sp, x: w.x, z: w.z, ph: i * 1.7, k: 0.6 + rnd() * 0.4 });
   }
 
-  // bolt: pre-allocated crossed ribbons (one along x, one along z per segment), refilled on each strike
-  const bp = new Float32Array(MAX_SEGS * 2 * 4 * 3);
-  const bg = new THREE.BufferGeometry();
-  const bpa = new THREE.BufferAttribute(bp, 3);
-  bpa.setUsage(THREE.DynamicDrawUsage);
-  bg.setAttribute('position', bpa);
-  const bi: number[] = [];
-  for (let q = 0; q < MAX_SEGS * 2; q++) bi.push(q * 4, q * 4 + 1, q * 4 + 2, q * 4 + 1, q * 4 + 3, q * 4 + 2);
-  bg.setIndex(bi);
-  bg.setDrawRange(0, 0);
-  const bmat = new THREE.MeshBasicMaterial({
-    color: '#dfe8ff', transparent: true, opacity: 0, blending: THREE.AdditiveBlending,
-    depthWrite: false, fog: false, toneMapped: false, side: THREE.DoubleSide,
-  });
-  const bolt = new THREE.Mesh(bg, bmat);
-  bolt.frustumCulled = false;
-  bolt.visible = false;
-  group.add(bolt);
-  let quads = 0;
-  const seg = (a: Vec3, b: Vec3, w: number) => {
-    for (const [dx, dz] of [[w, 0], [0, w]]) {
-      const o = quads * 12;
-      bp.set([a.x - dx, a.y, a.z - dz, a.x + dx, a.y, a.z + dz, b.x - dx, b.y, b.z - dz, b.x + dx, b.y, b.z + dz], o);
-      quads++;
-    }
+  // bolt: pre-allocated crossed ribbons (one along x, one along z per segment), refilled on each strike.
+  // A narrow bright core plus a wide faint glow ribbon share the same path.
+  const ribbon = (color: string, wScale: number) => {
+    const pos = new Float32Array(MAX_SEGS * 2 * 4 * 3);
+    const g = new THREE.BufferGeometry();
+    const attr = new THREE.BufferAttribute(pos, 3);
+    attr.setUsage(THREE.DynamicDrawUsage);
+    g.setAttribute('position', attr);
+    const bi: number[] = [];
+    for (let q = 0; q < MAX_SEGS * 2; q++) bi.push(q * 4, q * 4 + 1, q * 4 + 2, q * 4 + 1, q * 4 + 3, q * 4 + 2);
+    g.setIndex(bi);
+    g.setDrawRange(0, 0);
+    const mat = new THREE.MeshBasicMaterial({
+      color, transparent: true, opacity: 0, blending: THREE.AdditiveBlending,
+      depthWrite: false, fog: false, toneMapped: false, side: THREE.DoubleSide,
+    });
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.frustumCulled = false;
+    mesh.visible = false;
+    group.add(mesh);
+    let quads = 0;
+    return {
+      mesh, mat,
+      reset: () => {
+        quads = 0;
+      },
+      seg: (a: Vec3, b: Vec3, w: number) => {
+        for (const [dx, dz] of [[w * wScale, 0], [0, w * wScale]]) {
+          pos.set([a.x - dx, a.y, a.z - dz, a.x + dx, a.y, a.z + dz, b.x - dx, b.y, b.z - dz, b.x + dx, b.y, b.z + dz], quads * 12);
+          quads++;
+        }
+      },
+      commit: () => {
+        g.setDrawRange(0, quads * 6);
+        attr.needsUpdate = true;
+      },
+    };
   };
+  const core = ribbon('#ffffff', 1);
+  const glow = ribbon('#7fa2ff', 4.5);
+  const bolts = [core, glow];
   const strikeBolt = (seed2: number, top: THREE.Vector3) => {
-    quads = 0;
+    for (const r of bolts) r.reset();
     const from = { x: top.x + 2, y: CLOUD_Y, z: top.z + 1 };
     const path = boltPath(seed2, from, { x: top.x, y: top.y, z: top.z }, MAIN_SEGS);
-    for (let i = 0; i < MAIN_SEGS; i++) seg(path[i], path[i + 1], 0.06);
+    for (let i = 0; i < MAIN_SEGS; i++) for (const r of bolts) r.seg(path[i], path[i + 1], 0.11);
     for (const [at, dx, dz] of [[4, 5, -3], [8, -4, 4]]) {
       const s = path[at];
       const br = boltPath(seed2 + at, s, { x: s.x + dx, y: s.y - 9, z: s.z + dz }, BRANCH_SEGS);
-      for (let i = 0; i < BRANCH_SEGS; i++) seg(br[i], br[i + 1], 0.035);
+      for (let i = 0; i < BRANCH_SEGS; i++) for (const r of bolts) r.seg(br[i], br[i + 1], 0.06);
     }
-    bg.setDrawRange(0, quads * 6);
-    bpa.needsUpdate = true;
+    for (const r of bolts) r.commit();
   };
 
   // fire: three Points clouds driven entirely by uniforms (no per-frame allocation)
@@ -223,7 +243,7 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
 
     const st = s.strike;
     if (st === null) {
-      bolt.visible = false;
+      for (const r of bolts) r.mesh.visible = false;
       light.intensity = 0;
       for (const p of fire) p.visible = false;
       lastAge = Infinity;
@@ -244,10 +264,12 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     }
     lastAge = st.age;
 
-    bolt.visible = st.age < BOLT_SECONDS;
-    if (bolt.visible) {
-      const k = 1 - st.age / BOLT_SECONDS;
-      bmat.opacity = k * (0.75 + 0.25 * Math.sin(st.age * 90));
+    const on = st.age < BOLT_SECONDS;
+    for (const r of bolts) r.mesh.visible = on;
+    if (on) {
+      const k = (1 - st.age / BOLT_SECONDS) * (0.8 + 0.2 * Math.sin(st.age * 90));
+      core.mat.opacity = k;
+      glow.mat.opacity = k * 0.3;
     }
 
     const b = burn(st.age);
@@ -257,7 +279,7 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     for (const p of fire) p.visible = b > 0;
     // flicker: two incommensurate sines, scaled by burn
     light.position.copy(treeTop);
-    light.intensity = b * (34 + 10 * Math.sin(t * 17) + 6 * Math.sin(t * 29 + 1));
+    light.intensity = b * (14 + 4 * Math.sin(t * 17) + 3 * Math.sin(t * 29 + 1));
 
     const ch = Math.min(1, st.age / CHAR_SECONDS);
     if (ch !== charWritten) writeChar(tree, ch);
