@@ -13,6 +13,8 @@ export type StormOpts = {
   gapMin?: number;
   gapMax?: number;
   firstGap?: number;
+  // tree indices the strike may pick (e.g. the ones in view); defaults to every tree
+  candidates?: number[];
 };
 export type Storm = { step: (dtSeconds: number) => StormState };
 
@@ -57,11 +59,14 @@ export function createStorm(seed: number, opts: StormOpts): Storm {
   let flashes: number[] = [];
 
   const enterActive = () => {
-    // flashes are spaced at least 2 s apart, so at most one per second
-    strikeAt = 3 + rnd() * 5;
+    // flashes are at least 1 s apart (0.5-2.5, 3.5-8, 10-14, 16-22), so never more than one per second
+    strikeAt = 3.5 + rnd() * 4.5;
     flashes = [0.5 + rnd() * 2, strikeAt, 10 + rnd() * 4, 16 + rnd() * 6];
     treeIndex = -1;
     if (opts.treeCount > 0) treeIndex = Math.floor(rnd() * opts.treeCount);
+    if (opts.treeCount > 0 && opts.candidates && opts.candidates.length > 0) {
+      treeIndex = opts.candidates[Math.floor(rnd() * opts.candidates.length)];
+    }
   };
 
   const duration = () => {

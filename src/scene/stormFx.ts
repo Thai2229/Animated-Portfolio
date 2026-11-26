@@ -83,6 +83,7 @@ const SMOKE_COLOR = /* glsl */ `
 export type StormFx = {
   group: THREE.Group;
   update: (s: StormState, t: number, px: number) => void;
+  dispose: () => void;
   // world position of the burning tree top, for the debug hook
   treeTop: THREE.Vector3;
 };
@@ -161,6 +162,10 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
         g.setDrawRange(0, quads * 6);
         attr.needsUpdate = true;
       },
+      dispose: () => {
+        g.dispose();
+        mat.dispose();
+      },
     };
   };
   const core = ribbon('#ffffff', 1);
@@ -184,6 +189,7 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     uTime: { value: 0 }, uBurn: { value: 0 }, uPx: { value: 1 },
     uOrigin: { value: new THREE.Vector3() }, uScale: { value: 0.4 },
   };
+  const pointSets: THREE.Points[] = [];
   const particles = (n: number, speed: string, body: string, color: string, additive: boolean) => {
     const g = new THREE.BufferGeometry();
     const a = new Float32Array(n * 4);
@@ -202,6 +208,7 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     pts.frustumCulled = false;
     pts.visible = false;
     group.add(pts);
+    pointSets.push(pts);
     return pts;
   };
   const fire = [
@@ -267,7 +274,7 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     const on = st.age < BOLT_SECONDS;
     for (const r of bolts) r.mesh.visible = on;
     if (on) {
-      const k = (1 - st.age / BOLT_SECONDS) * (0.8 + 0.2 * Math.sin(st.age * 90));
+      const k = 1 - st.age / BOLT_SECONDS;
       core.mat.opacity = k;
       glow.mat.opacity = k * 0.3;
     }
@@ -277,13 +284,37 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     uniforms.uBurn.value = b;
     uniforms.uPx.value = px;
     for (const p of fire) p.visible = b > 0;
-    // flicker: two incommensurate sines, scaled by burn
+    // slow flicker (about 1.4 Hz, no strobing), scaled by burn
     light.position.copy(treeTop);
-    light.intensity = b * (14 + 4 * Math.sin(t * 17) + 3 * Math.sin(t * 29 + 1));
+    light.intensity = b * (14 + 4 * Math.sin(t * 9));
 
     const ch = Math.min(1, st.age / CHAR_SECONDS);
     if (ch !== charWritten) writeChar(tree, ch);
   };
 
-  return { group, update, treeTop };
+  const dispose = () => {
+    ct.dispose();
+    for (const cl of clouds) cl.s.material.dispose();
+    for (const r of bolts) r.dispose();
+    for (const p of pointSets) {
+      p.geometry.dispose();
+      (p.material as THREE.Material).dispose();
+    }
+    light.dispose();
+  };
+
+  return { group, update, dispose, treeTop };
+}
+
+// indices of the trees that fall inside the camera's view (NDC within +-margin), for biasing the strike on-screen
+export function treesInView(world: WorldData, cam: THREE.PerspectiveCamera, margin: number): number[] {
+  cam.updateMatrixWorld();
+  const v = new THREE.Vector3();
+  const out: number[] = [];
+  for (let i = 0; i < world.treeCount; i++) {
+    const o = i * 16;
+    v.set(world.treeMatrices[o + 12], world.treeMatrices[o + 13], world.treeMatrices[o + 14]).project(cam);
+    if (Math.abs(v.x) < margin && Math.abs(v.y) < margin && v.z > -1 && v.z < 1) out.push(i);
+  }
+  return out;
 }

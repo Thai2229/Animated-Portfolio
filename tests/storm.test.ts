@@ -168,6 +168,14 @@ describe('strike', () => {
     for (const { s } of none) expect(s.strike).toBeNull();
   });
 
+  it('picks only from the candidate list when one is given', () => {
+    for (const seed of [1, 2, 3, 4, 5]) {
+      const struck = run(seed, opts({ gapMin: 5, gapMax: 5, candidates: [3, 7] }), 200).filter((x) => x.s.strike);
+      expect(struck.length).toBeGreaterThan(0);
+      for (const { s } of struck) expect([3, 7]).toContain(s.strike!.treeIndex);
+    }
+  });
+
   it('keeps the strike (burning tree) available while the clouds clear', () => {
     const states = run(2, opts({ gapMin: 5, gapMax: 5 }), 60);
     const clearing = states.filter((x) => x.s.phase === 'clearing');
