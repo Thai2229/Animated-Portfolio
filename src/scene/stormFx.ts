@@ -5,7 +5,7 @@ import type { WorldData } from '../terrain/world';
 import type { Profile } from '../terrain/profile';
 import { boltPath, burn, type StormState, type Vec3 } from './storm';
 
-const CLOUD_Y = 40;
+const CLOUD_Y = 26;
 const BOLT_SECONDS = 0.25;
 const CHAR_SECONDS = 6;
 const BRANCH_SEGS = 5;
@@ -40,7 +40,7 @@ const FLAME_BODY = /* glsl */ `
   float r = (1.0 - life * 0.7) * 0.3 * uScale * 2.2;
   p += vec3((aRnd.y - 0.5) * 2.0 * r, life * (0.5 + aRnd.z) * 1.1, (aRnd.z - 0.5) * 2.0 * r);
   p.x += sin(uTime * 7.0 + aRnd.x * 40.0) * 0.06 * life;
-  size = (0.5 + 0.5 * aRnd.w) * (1.0 - life) * 1.0 * (0.4 + 0.6 * uBurn);
+  size = (0.5 + 0.5 * aRnd.w) * (1.0 - life) * 0.7 * (0.4 + 0.6 * uBurn);
 `;
 const SPARK_BODY = /* glsl */ `
   float t = life * 2.2;
@@ -65,7 +65,7 @@ void main() {
 `;
 const FLAME_COLOR = /* glsl */ `
   vec3 c = mix(vec3(1.0, 0.82, 0.32), vec3(0.85, 0.2, 0.04), vLife);
-  gl_FragColor = vec4(c, soft * soft * (1.0 - vLife) * 0.9);
+  gl_FragColor = vec4(c, soft * soft * (1.0 - vLife) * 0.55);
 `;
 const SPARK_COLOR = /* glsl */ `
   gl_FragColor = vec4(1.0, 0.75, 0.3, soft * (1.0 - vLife));
@@ -107,12 +107,12 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
   const clouds: { s: THREE.Sprite; x: number; z: number; ph: number; k: number }[] = [];
   const count = Math.round(20 * (1 - 0.5 * Number(low)));
   for (let i = 0; i < count; i++) {
-    const w = A2W(-10 + rnd() * 80, -30 + rnd() * 80);
+    const w = A2W(-5 + rnd() * 50, 15 + rnd() * 40);
     const sp = new THREE.Sprite(new THREE.SpriteMaterial({
       map: ct, color: '#323a45', transparent: true, opacity: 0, depthWrite: false, fog: false,
     }));
     const size = 40 + rnd() * 40;
-    sp.position.set(w.x, CLOUD_Y + rnd() * 8, w.z);
+    sp.position.set(w.x, CLOUD_Y - 2 + rnd() * 8, w.z);
     sp.scale.set(size, size * 0.5, 1);
     sp.visible = false;
     group.add(sp);
@@ -149,11 +149,11 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     quads = 0;
     const from = { x: top.x + 2, y: CLOUD_Y, z: top.z + 1 };
     const path = boltPath(seed2, from, { x: top.x, y: top.y, z: top.z }, MAIN_SEGS);
-    for (let i = 0; i < MAIN_SEGS; i++) seg(path[i], path[i + 1], 0.16);
+    for (let i = 0; i < MAIN_SEGS; i++) seg(path[i], path[i + 1], 0.06);
     for (const [at, dx, dz] of [[4, 5, -3], [8, -4, 4]]) {
       const s = path[at];
       const br = boltPath(seed2 + at, s, { x: s.x + dx, y: s.y - 9, z: s.z + dz }, BRANCH_SEGS);
-      for (let i = 0; i < BRANCH_SEGS; i++) seg(br[i], br[i + 1], 0.08);
+      for (let i = 0; i < BRANCH_SEGS; i++) seg(br[i], br[i + 1], 0.035);
     }
     bg.setDrawRange(0, quads * 6);
     bpa.needsUpdate = true;
