@@ -68,7 +68,24 @@ export function createValley(world: WorldData, profile: Profile): ValleyScene {
   geo.computeVertexNormals();
   const ground = terrainTexture(world);
   group.add(new THREE.Mesh(geo, makeTerrainMaterial(ground, world, profile)));
-  const catcher = new THREE.Mesh(geo, new THREE.ShadowMaterial({ opacity: 0.34 }));
+  // the sun skims the cliff faces, so a tree's shadow smears into a long hard band there: catch shadows on gentle ground only
+  const catcherMat = new THREE.ShadowMaterial({ opacity: 0.34 });
+  catcherMat.onBeforeCompile = (sh) => {
+    const mask = 'opacity * ( 1.0 - getShadowMask() )';
+    const hook = '#include <begin_vertex>';
+    // a three.js upgrade that renames these would silently bring the cliff shadow bands back
+    if (!sh.fragmentShader.includes(mask) || !sh.vertexShader.includes(hook)) {
+      console.warn('catcher shader: replace target not found, slope mask not applied');
+      return;
+    }
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying float vNy;')
+      .replace(hook, hook + '\nvNy = normal.y;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', '#include <common>\nvarying float vNy;')
+      .replace(mask, mask + ' * smoothstep( 0.7, 0.88, vNy )');
+  };
+  const catcher = new THREE.Mesh(geo, catcherMat);
   catcher.receiveShadow = true;
   catcher.position.y = 0.01;
   group.add(catcher);

@@ -168,6 +168,7 @@ export function buildWorld(profile: Profile, report: (stage: string, fraction: n
       const lowGrass = sstep(0.25, 0.04, slope) * sstep(14, 2, h);
       let veg = gentle * (0.55 + 0.45 * sstep(0.2, -0.7, cav)) + (mid - 0.5) * 0.5 + (fine - 0.5) * 0.35 - sstep(16, 26, h) * 0.6;
       veg = sstep(0.3, 0.7, veg);
+      veg *= sstep(0.75, 0.45, slope); // noise alone must not tint cliffs: the top-down map stretches it into dark vertical streaks
       const fcol = mixc(forest, forestD, fine2);
       const gcol = mixc(grass, grassL, mid);
       let ground = mixc(soil, gcol, lowGrass * 0.9);
@@ -190,7 +191,7 @@ export function buildWorld(profile: Profile, report: (stage: string, fraction: n
       if (h > 0.5) VEG[i] = veg * gentle;
       // steep rock: no baked shadow or cavity (they smear down the walls as dark stripes), a gully-free normal,
       // and a floor of 0.75 of the fully lit value so the triplanar rock carries the look
-      const steep = 1 - sstep(0.5, 0.8, ny);
+      const steep = 1 - sstep(0.6, 0.85, ny);
       const ndlRaw = Math.max(0, nx * sun.x + ny * sun.y + nz * sun.z);
       const bn = nrmBlurAt(xi, yi);
       const ndlSmooth = Math.max(0, bn[0] * sun.x + bn[1] * sun.y + bn[2] * sun.z);

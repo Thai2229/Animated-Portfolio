@@ -8,7 +8,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { createValley } from './buildScene';
 import { createStorm, type Storm } from './storm';
 import { createStormFx, treesInView } from './stormFx';
-import { buildSects, type SectBuild } from './architecture';
+import { buildSects, makeHitProxy, type SectBuild } from './architecture';
 import { flyPose, type Pose, type Vec3 } from './cameraPath';
 import { HOME, LABEL_UP, sectPose, fovFor, offA } from './poses';
 import { A2W, C, SITES, SUN_DIR, type SiteKey } from '../terrain/layout';
@@ -37,24 +37,18 @@ type Props = {
 export function Scene({ world, profile, hovered, active, mobile, reduced, labelRefs, onHover, onSelect, onReady }: Props) {
   const { gl, scene, camera, size, invalidate } = useThree();
   const valley = useMemo(() => createValley(world, profile), [world, profile]);
-  const sects = useMemo(() => buildSects(valley.heightAt, world.siteHeights), [valley, world]);
+  const sects = useMemo(() => buildSects(valley.heightAt, world.siteHeights, profile.name === 'high'), [valley, world, profile]);
   const builds = useMemo<Record<SiteKey, SectBuild>>(() => ({ ledge: sects.ledge, valley: sects.valley, lake: sects.lake }), [sects]);
 
   // hit proxies make hovering stable across gaps between pillars and roofs
   useEffect(() => {
     const proxies: THREE.Mesh[] = [];
     for (const k of Object.keys(builds) as SiteKey[]) {
-      const s = SITES[k];
-      const hit = new THREE.Mesh(
-        new THREE.CylinderGeometry(s.r * 0.85, s.r * 0.85, 4, 16),
-        new THREE.MeshBasicMaterial({ visible: false }),
-      );
-      hit.position.y = 1.8;
-      builds[k].group.add(hit);
+      const hit = makeHitProxy(builds[k].group, SITES[k], world.siteHeights[k]);
       proxies.push(hit);
     }
     return () => proxies.forEach((h) => h.removeFromParent());
-  }, [builds]);
+  }, [builds, world]);
 
   // ground glow ring per sect for hover
   const rings = useMemo(() => {

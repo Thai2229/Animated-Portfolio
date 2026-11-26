@@ -21,6 +21,10 @@ vec4 tri(sampler2D t, vec3 p, vec3 w) {
 const ROCK_BLOCK = /* glsl */ `
 vec3 N = normalize(vWNrm);
 float rockW = 1.0 - smoothstep(0.5, 0.76, N.y);
+// a cliff spans only a texel or two of the top-down map, whose rim and foot speckle then smears into dark vertical
+// streaks: light steep faces from the mesh normal instead (same granite, sky and sun terms as the bake)
+vec3 steepLit = vec3(0.698, 0.675, 0.635) * (vec3(0.34, 0.42, 0.54) * (0.6 + 0.4 * N.y) + vec3(1.5, 1.36, 1.14) * max(dot(N, uSun), 0.0));
+diffuseColor.rgb = mix(diffuseColor.rgb, pow(pow(steepLit, vec3(1.0 / 1.06)), vec3(2.2)), rockW);
 // no branch here: texture lookups and dFdx/dFdy need uniform control flow, rockW is applied with mix below
 {
   vec3 p = vWPos;
