@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { createValley } from './buildScene';
-import { buildSects, type SectBuild } from './architecture';
+import { buildSects, makeHitProxy, type SectBuild } from './architecture';
 import { flyPose, type Pose, type Vec3 } from './cameraPath';
 import { HOME, LABEL_UP, sectPose, fovFor, offA } from './poses';
 import { A2W, C, SITES, SUN_DIR, type SiteKey } from '../terrain/layout';
@@ -40,17 +40,11 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
   useEffect(() => {
     const proxies: THREE.Mesh[] = [];
     for (const k of Object.keys(builds) as SiteKey[]) {
-      const s = SITES[k];
-      const hit = new THREE.Mesh(
-        new THREE.CylinderGeometry(s.r * 0.85, s.r * 0.85, 4, 16),
-        new THREE.MeshBasicMaterial({ visible: false }),
-      );
-      hit.position.y = 1.8;
-      builds[k].group.add(hit);
+      const hit = makeHitProxy(builds[k].group, SITES[k], world.siteHeights[k]);
       proxies.push(hit);
     }
     return () => proxies.forEach((h) => h.removeFromParent());
-  }, [builds]);
+  }, [builds, world]);
 
   // ground glow ring per sect for hover
   const rings = useMemo(() => {

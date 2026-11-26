@@ -68,7 +68,7 @@ export function makeHeightAt(heights: Float32Array, n: number, worldSize: number
 
 // Thermal erosion pass over an m x m grid in place: material slides from any cell that stands higher than `talus`
 // (rise per world unit) above a neighbour, so needles and walls relax to a scree angle and pile up as concave aprons.
-function slump(C: Float32Array, m: number, spacing: number, talus: number, iters: number, rate: number) {
+export function slump(C: Float32Array, m: number, spacing: number, talus: number, iters: number, rate: number) {
   const d = new Float32Array(m * m);
   const T = talus * spacing;
   const off = [1, -1, m, -m, m + 1, -m - 1, m - 1, -m + 1];
@@ -105,7 +105,7 @@ function slump(C: Float32Array, m: number, spacing: number, talus: number, iters
 
 // Relaxes the macro shape on a block-averaged copy (about 256 cells across, so it stays cheap at any n) and adds the
 // change back, then a few full-resolution passes take the fine cliffs and spikes the coarse grid cannot see.
-function thermal(H: Float32Array, n: number, worldSize: number, talus: number, rate: number) {
+export function thermal(H: Float32Array, n: number, worldSize: number, talus: number, rate: number) {
   const texel = worldSize / (n - 1);
   const f = Math.max(1, Math.round(n / 256));
   if (f > 1) {
@@ -119,7 +119,7 @@ function thermal(H: Float32Array, n: number, worldSize: number, talus: number, r
       }
     }
     const before = Float32Array.from(C);
-    slump(C, m, texel * f, talus, Math.round(m / 24), rate);
+    slump(C, m, texel * f, talus, Math.round(m / 6), rate);
     for (let y = 0; y < n; y++) {
       const fy = Math.min(m - 1.001, Math.max(0, (y + 0.5) / f - 0.5));
       const yi = Math.floor(fy);
@@ -262,7 +262,7 @@ export function generateHeightfield(opts: HeightfieldOptions) {
       const sharp = 0.55 + 0.2 * (simplex(wx * 0.07 + 9, wz * 0.07) * 0.5 + 0.5);
       const stepped = (k + sstep(sharp, 0.98, f)) * tier - (hn - h) * 0.35 + fbm(wx * 0.5, wz * 0.5, 2) * 0.2;
       const patch = sstep(-0.35, 0.3, fbm(wx * 0.04 + 20, wz * 0.04 - 7, 3));
-      H[i] = lerp(h, stepped, sstep(1.5, 4, h) * (0.35 + 0.6 * patch));
+      H[i] = lerp(h, stepped, sstep(1.5, 4, h) * (0.2 + 0.4 * patch));
     }
   }
   // cliff bands only where terraces step; anything steeper than the rock can hold slumps

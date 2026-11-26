@@ -921,6 +921,21 @@ function builders(M: Mats, fine: boolean) {
   return { hipRoof, polarRoof, hall, pagoda, roundTemple, wallLoop, gate, banner, lantern, podium, bonsai, pine, lionPair, incense, well, stairs, railing, put, strut, aimed };
 }
 
+// Invisible cylinder over a sect (tall enough for the pagoda) in world space: the merged detail meshes are not
+// raycastable, so hover and click land on this. The group may itself sit at the origin or at the site.
+export function makeHitProxy(group: THREE.Object3D, site: { a: number; b: number; r: number }, groundY: number) {
+  const height = 7;
+  const hit = new THREE.Mesh(
+    new THREE.CylinderGeometry(site.r * 1.1, site.r * 1.1, height, 16),
+    new THREE.MeshBasicMaterial({ visible: false }),
+  );
+  const w = A2W(site.a, site.b);
+  group.updateMatrixWorld(true);
+  hit.position.copy(group.worldToLocal(new THREE.Vector3(w.x, groundY + height / 2 - 0.2, w.z)));
+  group.add(hit);
+  return hit;
+}
+
 export type SectBuild = {
   group: THREE.Group;
   materials: THREE.MeshStandardMaterial[];

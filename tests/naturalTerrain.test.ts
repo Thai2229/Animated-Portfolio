@@ -5,8 +5,7 @@ import { A2W, W2A, SITES, LAKE, RIVER, RIDGE, FEEDER, FALL_TOP, FALL_BASE, WATER
 
 const OPTS = { n: 192, worldSize: 120, seed: 1234, erosionDroplets: 20000 };
 const STEEP_DEG = 60;
-// Measured on the original terrain (seed 1234): 44.0% of massif cells steeper than 60 deg (2619 of 5949),
-// prominence p99.9 = 7.45, max = 8.65. Targets: at least ~43% fewer steep cells, p99.9 down at least 40%.
+// Targets: far fewer near-vertical massif cells than the original spiky terrain, and no needle spikes.
 const STEEP_FRAC_MAX = 0.25;
 const STEEP_FRAC_MIN = 0.02; // some cliffs must remain
 const P999_MAX = 4.5;
@@ -89,7 +88,7 @@ describe('natural terrain shape', () => {
   });
 
   it('keeps a waterfall drop of at least 12 units', () => {
-    expect(at(FALL_TOP.a, FALL_TOP.b) - at(2.2, 17.4)).toBeGreaterThanOrEqual(12);
+    expect(at(FALL_TOP.a, FALL_TOP.b) - at(FALL_BASE.a, FALL_BASE.b)).toBeGreaterThanOrEqual(12);
   });
 
   it.each(['ledge', 'valley', 'lake'] as const)('keeps the %s site flat', (key) => {
@@ -128,4 +127,30 @@ describe('natural terrain shape', () => {
     expect(found).toBe(true);
     expect(at(LAKE.a, LAKE.b)).toBeLessThan(WATER_Y - 0.5);
   });
+});
+
+// The shipped profiles are 512 (low) and 1024 (high); above 256 cells the thermal pass takes its coarse path,
+// which the n=192 field never exercises. Same droplet density as the low profile, scaled down for test time.
+describe('natural terrain shape at the low-profile size', () => {
+  it('keeps the steep fraction and spikes bounded at n=512', () => {
+    const f = generateHeightfield({ n: 512, worldSize: 120, seed: 0, erosionDroplets: 60000 });
+    const sl = slopeGridDeg(f.heights, f.n, f.worldSize);
+    const pr = prominenceGrid(f.heights, f.n, 2);
+    let steep = 0;
+    let count = 0;
+    const vals: number[] = [];
+    for (let y = 3; y < f.n - 3; y++) {
+      for (let x = 3; x < f.n - 3; x++) {
+        const { a, b } = W2A((x / (f.n - 1) - 0.5) * f.worldSize, (y / (f.n - 1) - 0.5) * f.worldSize);
+        if (polyDist(a, b, RIDGE) < MASSIF_DIST && !excluded(a, b)) {
+          count++;
+          vals.push(pr[y * f.n + x]);
+          if (sl[y * f.n + x] > STEEP_DEG) steep++;
+        }
+      }
+    }
+    expect(steep / count).toBeLessThan(STEEP_FRAC_MAX);
+    expect(steep / count).toBeGreaterThan(STEEP_FRAC_MIN);
+    expect(percentile(vals, 0.999)).toBeLessThan(P999_MAX);
+  }, 30000);
 });
