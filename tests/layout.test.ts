@@ -39,10 +39,10 @@ describe('layout', () => {
     }
   });
 
-  it('matches the mock site positions', () => {
+  it('matches the mock site positions (valley and lake plateaus enlarged so the buildings clear each other)', () => {
     expect(SITES.ledge).toMatchObject({ a: 16, b: 15.5, r: 5.6 });
-    expect(SITES.valley).toMatchObject({ a: -15, b: 8, r: 4.8 });
-    expect(SITES.lake).toMatchObject({ a: 7.8, b: -6.5, r: 4.6 });
+    expect(SITES.valley).toMatchObject({ a: -15, b: 8, r: 5.5 });
+    expect(SITES.lake).toMatchObject({ a: 7.8, b: -6.5, r: 5.6 });
   });
 
   it('stream: flares at the lip, narrows just above it, then widens slowly; bed climbs upstream', () => {

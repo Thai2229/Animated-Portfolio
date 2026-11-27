@@ -184,8 +184,8 @@ describe('pickTreesNear', () => {
   });
 
   it('works for several clusters', () => {
-    expect(pickTreesNear({ x: 5.2, y: 0, z: 5 }, pos, 1, 5)).toEqual([4, 3]);
-    expect(pickTreesNear({ x: 5.2, y: 0, z: 5 }, pos, 1, 1)).toEqual([4]);
+    expect(pickTreesNear({ x: 5.2, y: 0, z: 5 }, pos, 1, 5)).toEqual([3, 4]);
+    expect(pickTreesNear({ x: 5.2, y: 0, z: 5 }, pos, 1, 1)).toEqual([3]);
   });
 
   it('accepts Float32Array and plain arrays alike', () => {

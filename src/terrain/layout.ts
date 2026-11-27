@@ -13,8 +13,8 @@ export type Pt = [number, number];
 export const RIDGE: Pt[] = [[-14, 48], [-2, 40], [10, 33], [22, 26], [34, 20], [48, 16]];
 export const SITES = {
   ledge: { a: 16, b: 15.5, r: 5.6, h: 13.5 },
-  valley: { a: -15, b: 8, r: 4.8, h: 0 },
-  lake: { a: 7.8, b: -6.5, r: 4.6, h: 4.5 },
+  valley: { a: -15, b: 8, r: 5.5, h: 0 },
+  lake: { a: 7.8, b: -6.5, r: 5.6, h: 4.5 },
 };
 export type SiteKey = keyof typeof SITES;
 export const LAKE = { a: -1, b: -9, r: 7.5 };

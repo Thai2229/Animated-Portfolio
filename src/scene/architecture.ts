@@ -936,13 +936,71 @@ export function makeHitProxy(group: THREE.Object3D, site: { a: number; b: number
   return hit;
 }
 
+// convex hull (world XZ) of one building, eaves included; the merged meshes lose this, so it is taken before baking
+export type Footprint = { name: string; hull: [number, number][] };
 export type SectBuild = {
   group: THREE.Group;
   materials: THREE.MeshStandardMaterial[];
+  footprints: Footprint[];
 };
+
+export function footprintOf(name: string, ...objs: THREE.Object3D[]): Footprint {
+  const seen = new Map<string, [number, number]>();
+  const v = new THREE.Vector3();
+  for (const obj of objs) obj.updateWorldMatrix(true, true);
+  const visit = (o: THREE.Object3D) => {
+    const m = o as THREE.Mesh;
+    if (!m.isMesh) return;
+    const pos = m.geometry.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i).applyMatrix4(m.matrixWorld);
+      seen.set(`${Math.round(v.x * 100)}_${Math.round(v.z * 100)}`, [v.x, v.z]);
+    }
+  };
+  for (const obj of objs) obj.traverse(visit);
+  const pts = [...seen.values()].sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+  const cross = (o: [number, number], a: [number, number], b: [number, number]) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const half = (list: [number, number][]) => {
+    const h: [number, number][] = [];
+    for (const p of list) {
+      while (h.length >= 2 && cross(h[h.length - 2], h[h.length - 1], p) <= 0) h.pop();
+      h.push(p);
+    }
+    h.pop();
+    return h;
+  };
+  return { name, hull: half(pts).concat(half(pts.slice().reverse())) };
+}
+
+type P2 = [number, number];
+const turn = (o: P2, a: P2, b: P2) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+const inHull = (p: P2, h: P2[]) => h.every((q, i) => turn(q, h[(i + 1) % h.length], p) >= 0);
+function edgeDist(p: P2, a: P2, b: P2) {
+  const dx = b[0] - a[0];
+  const dz = b[1] - a[1];
+  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dz) / (dx * dx + dz * dz || 1)));
+  return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dz);
+}
+// distance from a point to a convex counter-clockwise hull; 0 inside
+export function pointHullDist(p: P2, h: P2[]) {
+  if (inHull(p, h)) return 0;
+  return Math.min(...h.map((q, i) => edgeDist(p, q, h[(i + 1) % h.length])));
+}
+// distance between two convex hulls; 0 when they touch or overlap
+export function hullGap(a: P2[], b: P2[]) {
+  for (let i = 0; i < a.length; i++) {
+    for (let j = 0; j < b.length; j++) {
+      const [p1, p2, q1, q2] = [a[i], a[(i + 1) % a.length], b[j], b[(j + 1) % b.length]];
+      if (turn(p1, p2, q1) * turn(p1, p2, q2) < 0 && turn(q1, q2, p1) * turn(q1, q2, p2) < 0) return 0;
+    }
+  }
+  return Math.min(...a.map((p) => pointHullDist(p, b)), ...b.map((p) => pointHullDist(p, a)));
+}
 
 // facing the camera: -45deg puts a hall's front (local +z) toward the viewer
 const FACE = -45 + 180;
+// halls are drawn a little smaller so neighbouring roofs and eaves keep a clear gap
+const HALL_K = 0.85;
 
 export function buildSects(heightAt: (x: number, z: number) => number, siteHeights: Record<SiteKey, number>, fine = true) {
   const placeA = (group: THREE.Group, obj: THREE.Object3D, a: number, b: number, yOff = 0, rotDeg = 0) => {
@@ -966,9 +1024,9 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
         f.add(t);
       }
     }
-    placeA(g, f, a, b, 0, rot);
+    return placeA(g, f, a, b, 0, rot);
   };
-  const collect = (group: THREE.Group, M: Mats): SectBuild => {
+  const collect = (group: THREE.Group, M: Mats, footprints: Footprint[]): SectBuild => {
     mergeStatic(group);
     const set = new Set<THREE.MeshStandardMaterial>(Object.values(M));
     group.traverse((o) => {
@@ -976,7 +1034,7 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
       if (!(o as THREE.Mesh).isMesh || !m) return;
       for (const x of [m].flat()) set.add(x as THREE.MeshStandardMaterial);
     });
-    return { group, materials: [...set] };
+    return { group, materials: [...set], footprints };
   };
 
   // Sect I: Swift Wind Pagoda on the massif ledge (blue banners)
@@ -985,29 +1043,20 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     const B = builders(M, fine);
     const g = new THREE.Group();
     const base = SITES.ledge;
+    const fp: Footprint[] = [];
     // flagstone terrace with a rim, so the ledge reads as built ground
     M.paving.map!.repeat.set(5, 5);
     M.paving.color.set('#a9a498');
     placeA(g, mesh(cyl(3.5, 3.6, 0.05, 48), M.paving), base.a, base.b, 0.025);
     placeA(g, mesh(cyl(3.68, 3.68, 0.09, 48), M.granite), base.a, base.b, 0.0);
-    placeA(g, B.pagoda(5, 0.8), base.a + 1.6, base.b + 0.6);
-    placeA(g, B.hall({ w: 2.6, d: 1.5, h: 0.75 }), base.a - 1.5, base.b + 0.9, 0, FACE);
-    placeA(g, B.hall({ w: 1.6, d: 1.1, h: 0.6 }), base.a - 2.2, base.b - 1.8, 0, FACE + 90);
-    frontProps(g, B, base.a - 1.5, base.b + 0.9, FACE, 2.6, 1.5);
-    placeA(g, B.incense(), base.a + 0.1, base.b - 0.4, 0.05);
-    placeA(g, B.pine(1.5), base.a - 3.5, base.b + 2.6, 0);
-    placeA(g, B.pine(1.2), base.a + 3.5, base.b - 0.6, 0);
-    placeA(g, B.pine(1.0), base.a + 3.0, base.b + 3.0, 0);
-    // low railing along the cliff-side edge of the terrace
-    const rail: V3[] = [];
-    for (let t = Math.PI * 0.92; t <= Math.PI * 2.08; t += 0.09) {
-      const pa = base.a + Math.cos(t) * 3.45;
-      const pb = base.b + Math.sin(t) * 3.45;
-      if (Math.hypot(pa - (base.a + 1.0), pb - (base.b - 3.4)) < 1.5 || Math.hypot(pa - (base.a - 0.2), pb - (base.b - 3.6)) < 0.5) continue;
-      const w = A2W(pa, pb);
-      rail.push([w.x, siteHeights.ledge + 0.05, w.z]);
-    }
-    B.railing(g, rail, 0.3);
+    fp.push(footprintOf('pagoda', placeA(g, B.pagoda(5, 0.8), base.a + 1.85, base.b + 0.6)));
+    const hallObj = placeA(g, B.hall({ w: 2.6, d: 1.5, h: 0.75 }), base.a - 1.85, base.b + 1.6, 0, FACE);
+    fp.push(footprintOf('side hall', placeA(g, B.hall({ w: 1.6, d: 1.1, h: 0.6 }), base.a - 2.2, base.b - 2.1, 0, FACE + 90)));
+    fp.push(footprintOf('hall', hallObj, frontProps(g, B, base.a - 1.85, base.b + 1.6, FACE, 2.6, 1.5)));
+    placeA(g, B.incense(), base.a - 0.4, base.b - 1.6, 0.05);
+    placeA(g, B.pine(1.5), base.a - 0.2, base.b + 3.5, 0);
+    placeA(g, B.pine(1.2), base.a + 4.1, base.b - 0.9, 0);
+    placeA(g, B.pine(1.0), base.a + 2.4, base.b + 3.3, 0);
     const pav = new THREE.Group();
     [[-0.5, -0.5], [0.5, -0.5], [-0.5, 0.5], [0.5, 0.5]].forEach(([x, z]) => {
       const c = mesh(cyl(0.04, 0.04, 0.8, 6), M.red);
@@ -1029,11 +1078,24 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
       B.put(pav, box(0.03, 0.03, 1.0), M.red, q, 0.62, 0);
     });
     placeA(g, pav, base.a + 1.0, base.b - 3.4, 0.05, 0);
-    [[base.a - 3.4, base.b - 0.2], [base.a + 3.2, base.b + 2.2], [base.a - 0.2, base.b - 3.6]].forEach(([a, b]) =>
+    fp.push(footprintOf('pavilion', pav));
+    // low railing along the cliff-side edge of the terrace, broken wherever it would run into a building
+    let rail: V3[] = [];
+    for (let t = Math.PI * 0.92; t <= Math.PI * 2.08; t += 0.09) {
+      const w = A2W(base.a + Math.cos(t) * 3.45, base.b + Math.sin(t) * 3.45);
+      if (fp.some((f) => pointHullDist([w.x, w.z], f.hull) < 0.4)) {
+        if (rail.length > 1) B.railing(g, rail, 0.3);
+        rail = [];
+        continue;
+      }
+      rail.push([w.x, siteHeights.ledge + 0.05, w.z]);
+    }
+    if (rail.length > 1) B.railing(g, rail, 0.3);
+    [[base.a - 4.3, base.b - 0.7], [base.a + 4.1, base.b + 1.5], [base.a - 0.5, base.b - 3.4]].forEach(([a, b]) =>
       placeA(g, B.banner('#2f5f9a'), a, b),
     );
-    [[base.a - 0.4, base.b - 0.6], [base.a + 0.6, base.b - 1.6]].forEach(([a, b]) => placeA(g, B.lantern(), a, b));
-    return collect(g, M);
+    [[base.a - 0.3, base.b - 0.8], [base.a + 0.7, base.b - 1.7]].forEach(([a, b]) => placeA(g, B.lantern(), a, b));
+    return collect(g, M, fp);
   })();
 
   // Sect II: Hundred Disciplines Hall on the valley floor (red banners)
@@ -1043,61 +1105,68 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     const outer = new THREE.Group();
     const g = new THREE.Group();
     const base = SITES.valley;
+    const fp: Footprint[] = [];
     placeA(outer, g, base.a, base.b, 0, FACE);
     const main = B.hall({ w: 3.4, d: 1.9, h: 0.85, double: true, base: 0.45 });
-    main.position.set(0, 0, -2.0);
+    main.position.set(0, 0, -1.98);
+    main.scale.setScalar(HALL_K);
     g.add(main);
-    [[-2.4, 0.4], [2.4, 0.4]].forEach(([x, z]) => {
+    fp.push(footprintOf('main hall', main));
+    [[-3.39, 1.75], [3.39, 1.75]].forEach(([x, z]) => {
       const h = B.hall({ w: 2.0, d: 1.1, h: 0.6, base: 0.25 });
       h.position.set(x, 0, z);
+      h.scale.setScalar(HALL_K);
       h.rotation.y = -Math.PI / 2;
       if (x < 0) {
         h.rotation.y = Math.PI / 2;
       }
       g.add(h);
+      fp.push(footprintOf('side hall', h));
     });
     const front = B.hall({ w: 2.2, d: 1.0, h: 0.55, base: 0.25 });
-    front.position.set(0, 0, 3.1);
+    front.position.set(0, 0, 1.4);
+    front.scale.setScalar(HALL_K);
     g.add(front);
+    fp.push(footprintOf('front hall', front));
     const yard = mesh(box(4.0, 0.05, 4.6), M.stone);
     yard.position.set(0, 0.03, 0.4);
     yard.receiveShadow = true;
     g.add(yard);
     const incense = B.incense();
-    incense.position.set(0, 0.05, 1.0);
+    incense.position.set(0, 0.05, 3.4);
     g.add(incense);
-    g.add(B.wallLoop([[-3.7, -3.6], [3.7, -3.6], [3.7, 4.0], [-3.7, 4.0]]));
+    g.add(B.wallLoop([[-4.7, -3.6], [4.7, -3.6], [4.7, 4.4], [-4.7, 4.4]]));
     const gt = B.gate(2.2);
-    gt.position.set(0, 0, 4.9);
+    gt.position.set(0, 0, 5.3);
     g.add(gt);
     // courtyard life: a well, bonsai, old pines against the back wall, and stone lions guarding the gate
     const wl = B.well();
-    wl.position.set(-2.8, 0.05, 2.9);
+    wl.position.set(-3.3, 0.05, 3.7);
     g.add(wl);
-    [[2.8, 2.9, 1.2], [-1.0, 2.0, 0.9], [1.0, 2.0, 0.9]].forEach(([x, z, k]) => {
+    [[3.3, 3.7, 1.2], [-2.1, 3.6, 0.9], [2.1, 3.6, 0.9]].forEach(([x, z, k]) => {
       const t = B.bonsai(k);
       t.position.set(x, 0.05, z);
       g.add(t);
     });
-    [[-3.0, -2.9, 1.5], [3.0, -2.9, 1.4]].forEach(([x, z, k]) => {
+    [[-3.5, -2.9, 1.5], [3.5, -2.9, 1.4]].forEach(([x, z, k]) => {
       const t = B.pine(k);
       t.position.set(x, 0, z);
       g.add(t);
     });
     const gl = B.lionPair(1.1);
-    gl.position.set(0, 0, 5.9);
+    gl.position.set(0, 0, 6.0);
     g.add(gl);
-    [0.35, 1.7].forEach((z) => {
+    [3.65, 4.35].forEach((z) => {
       const slab = mesh(box(0.7, 0.04, 0.45), M.marble);
       slab.position.set(0, 0.06, z + 0.55);
       g.add(slab);
     });
-    [[-0.95, 2.0], [0.95, 2.0], [-0.95, -0.5], [0.95, -0.5]].forEach(([x, z]) => {
+    [[-1.3, 3.4], [1.3, 3.4], [-1.3, 4.05], [1.3, 4.05]].forEach(([x, z]) => {
       const l = B.lantern();
       l.position.set(x, 0.05, z);
       g.add(l);
     });
-    [[-3.9, 4.3], [3.9, 4.3], [-3.9, -3.9], [3.9, -3.9]].forEach(([x, z]) => {
+    [[-4.85, 4.6], [4.85, 4.6], [-4.85, -3.9], [4.85, -3.9]].forEach(([x, z]) => {
       const bn = B.banner('#a3281e');
       bn.position.set(x, 0, z);
       g.add(bn);
@@ -1105,7 +1174,7 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     g.traverse((o) => {
       if ((o as THREE.Mesh).isMesh) o.castShadow = true;
     });
-    return collect(outer, M);
+    return collect(outer, M, fp);
   })();
 
   // Sect III: Heavenly Balance Temple on the lake tier (gold banners), water pavilion, stair and zigzag bridge
@@ -1114,19 +1183,28 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     const B = builders(M, fine);
     const g = new THREE.Group();
     const base = SITES.lake;
+    const fp: Footprint[] = [];
     // turned 45 degrees so one of its four stairs faces the viewer; lions and a pair of pines flank that stair
-    placeA(g, B.roundTemple(), base.a, base.b, 0, 45);
+    // the temple and its halls are scaled down so the roofs and eaves clear each other on the tier
+    const TEMPLE_K = 0.85;
+    const temple = placeA(g, B.roundTemple(), base.a, base.b, 0, 45);
+    temple.scale.setScalar(TEMPLE_K);
     const lions = new THREE.Group();
     const pair = B.lionPair(0.75);
-    pair.position.z = 3.75;
+    pair.position.z = 3.75 * TEMPLE_K;
     lions.add(pair);
     placeA(g, lions, base.a, base.b, 0, 225);
-    placeA(g, B.pine(1.4), base.a - 3.6, base.b + 2.0, 0);
+    fp.push(footprintOf('temple', temple, lions));
+    placeA(g, B.pine(1.2), base.a - 4.3, base.b + 1.3, 0);
     placeA(g, B.pine(1.1), base.a + 3.7, base.b - 1.2, 0);
-    placeA(g, B.bonsai(1.3), base.a - 1.8, base.b + 2.7, 0);
+    placeA(g, B.bonsai(1.3), base.a - 0.05, base.b + 3.6, 0);
     [[-3.3, -1.5], [-3.3, 0.3]].forEach(([da, db]) => placeA(g, B.lantern(), base.a + da, base.b + db));
-    placeA(g, B.hall({ w: 1.8, d: 1.0, h: 0.55, roofMat: M.tileGreen }), base.a + 2.6, base.b + 1.4, 0, FACE + 30);
-    placeA(g, B.hall({ w: 1.5, d: 0.9, h: 0.5, roofMat: M.tileGreen }), base.a + 1.6, base.b + 3.0, 0, FACE + 60);
+    const hall1 = placeA(g, B.hall({ w: 1.8, d: 1.0, h: 0.55, roofMat: M.tileGreen }), base.a - 2.5, base.b + 3.35, 0, FACE + 30);
+    hall1.scale.setScalar(HALL_K);
+    fp.push(footprintOf('hall', hall1));
+    const hall2 = placeA(g, B.hall({ w: 1.5, d: 0.9, h: 0.5, roofMat: M.tileGreen }), base.a + 2.4, base.b + 3.75, 0, FACE + 60);
+    hall2.scale.setScalar(HALL_K);
+    fp.push(footprintOf('hall 2', hall2));
     const pav = new THREE.Group();
     const plat = mesh(cyl(1.0, 1.0, 0.16, 6), M.marble);
     plat.position.y = 0.08;
@@ -1153,6 +1231,7 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     const lw = A2W(LAKE.a + 1.5, LAKE.b + 0.5);
     pav.position.set(lw.x, WATER_Y, lw.z);
     g.add(pav);
+    fp.push(footprintOf('water pavilion', pav));
     // stone stair from the tier top down to the water
     {
       const s0 = A2W(base.a - 3.2, base.b - 0.6);
@@ -1210,10 +1289,10 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
         B.railing(g, pts, 0.28);
       }
     }
-    [[base.a + 0.5, base.b - 3.2], [base.a + 3.4, base.b - 1.4], [base.a - 2.2, base.b + 2.6]].forEach(([a, b]) =>
+    [[base.a - 1.8, base.b - 3.2], [base.a + 3.3, base.b - 2.0], [base.a + 3.6, base.b + 0.1]].forEach(([a, b]) =>
       placeA(g, B.banner('#c8952e'), a, b),
     );
-    return collect(g, M);
+    return collect(g, M, fp);
   })();
 
   // arched stone bridge where the path crosses the river

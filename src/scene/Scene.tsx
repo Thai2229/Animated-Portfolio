@@ -8,6 +8,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { createValley } from './buildScene';
 import { createStorm, MAX_FLASHES_PER_SECOND, type Storm } from './storm';
 import { createStormFx, treesInView } from './stormFx';
+import { createFires, clickIgnition } from './fires';
 import { createClickStrikes, groundPoint, hitSect, shouldStrike, stormFlashOn, type SectProxy } from './clickStrike';
 import { createClickFx } from './clickStrikeFx';
 import { createFlyers } from './swordsmen';
@@ -154,7 +155,18 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
   // storm: clouds, lightning, a burning pine; ?storm=now starts the first one after ~3 s (client only)
   const hemi = useRef<THREE.HemisphereLight>(null);
   const sun = useRef<THREE.DirectionalLight>(null);
-  const fx = useMemo(() => createStormFx(world, profile, valley.crown), [world, profile, valley]);
+  // the storm's struck tree and click strikes share one set of fires (6 at a time) and their tree positions
+  const fires = useMemo(() => createFires({}), [world, profile, valley]); // eslint-disable-line react-hooks/exhaustive-deps
+  const treeAt = useMemo(() => {
+    const out = new Float32Array(world.treeCount * 3);
+    for (let i = 0; i < world.treeCount; i++) {
+      out[i * 3] = world.treeMatrices[i * 16 + 12];
+      out[i * 3 + 1] = world.treeMatrices[i * 16 + 13];
+      out[i * 3 + 2] = world.treeMatrices[i * 16 + 14];
+    }
+    return out;
+  }, [world]);
+  const fx = useMemo(() => createStormFx(world, profile, valley.crown, fires), [world, profile, valley, fires]);
   const testStorm = useMemo(() => typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('storm') === 'now', []);
   // created in an effect so the random seed never runs during render; ?storm=now keeps a fixed seed
   const stormRef = useRef<Storm | null>(null);
@@ -274,11 +286,13 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
         return;
       }
       if (!clicks.strike(p, now)) return;
+      // the bolt sets the nearest trees alight; reduced motion never reaches here, so it never starts a fire
+      clickIgnition(p, treeAt, fires, { now });
       last.at = now;
       log.push(now);
       clickDebug.current.count++;
     };
-  }, [world, ground, clicks, reduced]);
+  }, [world, ground, clicks, reduced, treeAt, fires]);
   useEffect(() => {
     const el = gl.domElement;
     const down = { x: 0, y: 0 };
@@ -346,6 +360,10 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
     let sdt = Math.min(dt, 0.25);
     if (testStorm && w.__stormFreeze) sdt = 0;
     const storm = stormRef.current;
+    // fires burn in real time; the debug seeks and freezes move them along with the storm and click clocks
+    let fdt = Math.min(dt, 0.25);
+    if (clickTime.current.freeze || (testStorm && w.__stormFreeze)) fdt = 0;
+    fdt += skip.current + clickTime.current.skip;
     let cdt = Math.min(dt, 0.25);
     if (clickTime.current.freeze) cdt = 0;
     cdt += clickTime.current.skip;
@@ -363,7 +381,7 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
       }
       seekStrike.current = false;
       if (testStorm) w.__stormState = ss;
-      fx.update(ss, t, px);
+      fx.update(ss, t, px, fdt);
       stormFlash.current.flash = ss.flash;
       stormFlash.current.active = ss.phase === 'active';
       const flash = Math.max(ss.flash, cs.flash);
