@@ -174,10 +174,6 @@ export function Experience() {
             <b>Thai Van Le</b>
             <span>Software engineer · UC San Diego</span>
           </div>
-          <nav aria-label="Primary">
-            <button type="button" onClick={close}>Sects</button>
-            <button type="button" onClick={() => select(SECTS[0].slug)}>Path</button>
-          </nav>
         </header>
 
         <div className="chrome" data-hidden={active !== null}>

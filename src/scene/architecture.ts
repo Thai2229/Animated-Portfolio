@@ -979,7 +979,26 @@ export type SectBuild = {
   group: THREE.Group;
   materials: THREE.MeshStandardMaterial[];
   footprints: Footprint[];
+  rails: Rail[];
 };
+
+// a railing as built: its post bases (world space) and the top of whatever platform or step stands under (x, z), or null
+export type Rail = { name: string; posts: [number, number, number][]; support: (x: number, z: number) => number | null };
+// top of the highest rotated box under (x, z); the box turns by yaw about its centre like a mesh with rotation.y = yaw
+export type TopBox = { x: number; z: number; yaw: number; hx: number; hz: number; top: number };
+export function topUnder(boxes: TopBox[], px: number, pz: number) {
+  let best: number | null = null;
+  for (const b of boxes) {
+    const c = Math.cos(b.yaw);
+    const s = Math.sin(b.yaw);
+    const dx = px - b.x;
+    const dz = pz - b.z;
+    const u = dx * c - dz * s;
+    const w = dx * s + dz * c;
+    if (Math.abs(u) <= b.hx && Math.abs(w) <= b.hz && (best === null || b.top > best)) best = b.top;
+  }
+  return best;
+}
 
 export function footprintOf(name: string, ...objs: THREE.Object3D[]): Footprint {
   const seen = new Map<string, [number, number]>();
@@ -1063,7 +1082,7 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     }
     return placeA(g, f, a, b, 0, rot);
   };
-  const collect = (group: THREE.Group, M: Mats, footprints: Footprint[]): SectBuild => {
+  const collect = (group: THREE.Group, M: Mats, footprints: Footprint[], rails: Rail[] = []): SectBuild => {
     mergeStatic(group);
     const set = new Set<THREE.MeshStandardMaterial>(Object.values(M));
     group.traverse((o) => {
@@ -1071,7 +1090,7 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
       if (!(o as THREE.Mesh).isMesh || !m) return;
       for (const x of [m].flat()) set.add(x as THREE.MeshStandardMaterial);
     });
-    return { group, materials: [...set], footprints };
+    return { group, materials: [...set], footprints, rails };
   };
 
   // Sect I: Swift Wind Pagoda on the massif ledge (blue banners)
@@ -1120,22 +1139,32 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     placeA(g, pav, base.a + 1.0, base.b - 3.4, 0.05, 0);
     fp.push(footprintOf('pavilion', pav));
     // low railing along the cliff-side edge of the terrace, broken wherever it would run into a building
+    const rails: Rail[] = [];
+    const terrace = heightAt(A2W(base.a, base.b).x, A2W(base.a, base.b).z) + 0.05;
+    const addRail = (pts: V3[]) => {
+      B.railing(g, pts, 0.3);
+      rails.push({ name: 'ledge terrace', posts: pts, support: (x, z) => {
+        const c = A2W(base.a, base.b);
+        if (Math.hypot(x - c.x, z - c.z) <= 3.5) return terrace;
+        return null;
+      } });
+    };
     let rail: V3[] = [];
     for (let t = Math.PI * 0.92; t <= Math.PI * 2.08; t += 0.09) {
       const w = A2W(base.a + Math.cos(t) * 3.45, base.b + Math.sin(t) * 3.45);
       if (fp.some((f) => pointHullDist([w.x, w.z], f.hull) < 0.4)) {
-        if (rail.length > 1) B.railing(g, rail, 0.3);
+        if (rail.length > 1) addRail(rail);
         rail = [];
         continue;
       }
       rail.push([w.x, siteHeights.ledge + 0.05, w.z]);
     }
-    if (rail.length > 1) B.railing(g, rail, 0.3);
+    if (rail.length > 1) addRail(rail);
     [[base.a - 4.3, base.b - 0.7], [base.a + 4.1, base.b + 1.5], [base.a - 0.5, base.b - 3.4]].forEach(([a, b]) =>
       placeA(g, B.banner('#2f5f9a'), a, b),
     );
     [[base.a - 0.3, base.b - 0.8], [base.a + 0.7, base.b - 1.7]].forEach(([a, b]) => placeA(g, B.lantern(), a, b));
-    return collect(g, M, fp);
+    return collect(g, M, fp, rails);
   })();
 
   // Sect II: Hundred Disciplines Hall on the valley floor (red banners)
@@ -1266,11 +1295,21 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     }
     B.railing(pav, pillarsAt.slice(0, 4), 0.35);
     B.railing(pav, pillarsAt.slice(4), 0.35);
+    const lakeRails: Rail[] = [];
+    const stairTops: TopBox[] = [];
+    const deckTops: TopBox[] = [];
     B.put(pav, sph(0.07, 6, 4), M.gold, 0, 1.52, 0);
     B.put(pav, cone(0.04, 0.22, 6), M.gold, 0, 1.68, 0);
     const lw = A2W(LAKE.a + 1.5, LAKE.b + 0.5);
     pav.position.set(lw.x, WATER_Y, lw.z);
     g.add(pav);
+    // the hexagonal platform: its inscribed circle (apothem 0.866) is what a post can safely stand on
+    for (const part of [pillarsAt.slice(0, 4), pillarsAt.slice(4)]) {
+      lakeRails.push({ name: 'pavilion', posts: part.map((q) => [q[0] + lw.x, WATER_Y + q[1], q[2] + lw.z] as V3), support: (x, z) => {
+        if (Math.hypot(x - lw.x, z - lw.z) <= 0.866) return WATER_Y + 0.16;
+        return null;
+      } });
+    }
     fp.push(footprintOf('water pavilion', pav));
     // stone stair from the tier top down to the water
     {
@@ -1285,9 +1324,10 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
         st.rotation.y = -Math.atan2(s1.z - s0.z, s1.x - s0.x);
         st.castShadow = true;
         g.add(st);
+        stairTops.push({ x: st.position.x, z: st.position.z, yaw: st.rotation.y, hx: 0.21, hz: 0.375, top: st.position.y + 0.14 });
       }
     }
-    // rails down both sides of the stair
+    // rails down both sides of the stair: posts sit on the steps (0.375 half width) with their bases sunk into the treads
     {
       const s0 = A2W(base.a - 3.2, base.b - 0.6);
       const s1 = A2W(base.a - 6.0, base.b - 1.4);
@@ -1297,10 +1337,13 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
       for (const side of [-1, 1]) {
         const pts: V3[] = [];
         for (let k = 0; k <= 5; k++) {
-          const t = k / 5;
-          pts.push([lerp(s0.x, s1.x, t) + px * side * 0.5, lerp(siteHeights.lake, WATER_Y + 0.3, t) + 0.12, lerp(s0.z, s1.z, t) + pz * side * 0.5]);
+          // a post on every third step, on its tread (0.1 along from the step centre) and sunk 3 cm into it
+          const t = (k * 3) / 15;
+          const tp = t + 0.1 / len;
+          pts.push([lerp(s0.x, s1.x, tp) + px * side * 0.33, lerp(siteHeights.lake, WATER_Y + 0.3, t) + 0.11, lerp(s0.z, s1.z, tp) + pz * side * 0.33]);
         }
-        B.railing(g, pts, 0.32);
+        B.railing(g, pts, 0.4);
+        lakeRails.push({ name: 'stair', posts: pts, support: (x, z) => topUnder(stairTops, x, z) });
       }
     }
     const zig = [[base.a - 6.0, base.b - 1.4], [base.a - 6.8, base.b - 2.4], [base.a - 7.6, base.b - 1.4], [LAKE.a + 2.4, LAKE.b + 0.6]];
@@ -1313,6 +1356,7 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
       deck.rotation.y = -Math.atan2(q.z - p.z, q.x - p.x);
       deck.castShadow = true;
       g.add(deck);
+      deckTops.push({ x: deck.position.x, z: deck.position.z, yaw: deck.rotation.y, hx: (len + 0.25) / 2, hz: 0.225, top: WATER_Y + 0.32 });
       for (const t of [0.2, 0.5, 0.8]) {
         const pil = mesh(cyl(0.05, 0.05, 0.5, 6), M.stone);
         pil.position.set(lerp(p.x, q.x, t), WATER_Y, lerp(p.z, q.z, t));
@@ -1327,12 +1371,13 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
           pts.push([lerp(p.x, q.x, t) + nx * side * 0.2, WATER_Y + 0.32, lerp(p.z, q.z, t) + nz * side * 0.2]);
         }
         B.railing(g, pts, 0.28);
+        lakeRails.push({ name: 'zigzag', posts: pts, support: (x, z) => topUnder(deckTops, x, z) });
       }
     }
     [[base.a - 1.8, base.b - 3.2], [base.a + 3.3, base.b - 2.0], [base.a + 3.6, base.b + 0.1]].forEach(([a, b]) =>
       placeA(g, B.banner('#c8952e'), a, b),
     );
-    return collect(g, M, fp);
+    return collect(g, M, fp, lakeRails);
   })();
 
   // hump-backed stone arch bridge where the path crosses the river below the fall. It is built in a frame along the

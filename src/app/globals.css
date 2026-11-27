@@ -13,9 +13,6 @@ a { color: inherit; }
 .top { position: fixed; top: 0; left: 0; right: 0; z-index: 3; display: flex; justify-content: space-between; align-items: center; padding: 30px 44px; }
 .brand b { font-family: "Cormorant Garamond", serif; font-weight: 600; font-size: 28px; letter-spacing: .06em; display: block; line-height: 1; }
 .brand span { font-size: 10.5px; letter-spacing: .34em; text-transform: uppercase; opacity: .8; }
-.top nav { display: flex; gap: 34px; font-size: 11px; letter-spacing: .3em; text-transform: uppercase; }
-.top nav a, .top nav button { text-decoration: none; letter-spacing: inherit; text-transform: inherit; font-size: inherit; padding: 6px 0; opacity: .92; }
-.top nav a:hover, .top nav button:hover { color: #e0b36a; }
 
 .chrome { transition: opacity .5s; }
 .chrome[data-hidden="true"] { opacity: 0; pointer-events: none; }
@@ -85,7 +82,6 @@ a { color: inherit; }
   .top { padding: 20px 20px; }
   .brand b { font-size: 22px; }
   .brand span { font-size: 9px; letter-spacing: .26em; }
-  .top nav { display: none; }
   .intro { left: 20px; right: 20px; top: 84px; bottom: auto; max-width: none; }
   .intro h1 { font-size: 30px; }
   .intro p { font-size: 12px; margin-top: 6px; max-width: 320px; }
