@@ -6,14 +6,16 @@ import * as THREE from 'three';
 import { useFrame, useThree } from '@react-three/fiber';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { createValley } from './buildScene';
-import { createStorm, type Storm } from './storm';
+import { createStorm, MAX_FLASHES_PER_SECOND, type Storm } from './storm';
 import { createStormFx, treesInView } from './stormFx';
+import { createClickStrikes, groundPoint, hitSect, shouldStrike, stormFlashOn, type SectProxy } from './clickStrike';
+import { createClickFx } from './clickStrikeFx';
 import { createFlyers } from './swordsmen';
 import { createSwordsmenFx } from './swordsmenFx';
 import { buildSects, makeHitProxy, type SectBuild } from './architecture';
 import { flyPose, type Pose, type Vec3 } from './cameraPath';
 import { HOME, LABEL_UP, sectPose, fovFor, offA } from './poses';
-import { A2W, C, FALL_TOP, SITES, SUN_DIR, type SiteKey } from '../terrain/layout';
+import { A2W, C, FALL_TOP, SITES, SUN_DIR, WATER_Y, type SiteKey } from '../terrain/layout';
 import type { WorldData } from '../terrain/world';
 import type { Profile } from '../terrain/profile';
 import { SECTS } from '../content/sects';
@@ -232,6 +234,98 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
     };
   }, [scene, fx]);
 
+  // click strike: a click on open ground or water casts a bolt there; sects, the open panel and UI never strike
+  const clicks = useMemo(() => createClickStrikes(), []);
+  const ground = useMemo(() => (x: number, z: number) => Math.max(valley.heightAt(x, z), WATER_Y), [valley]);
+  const clickFx = useMemo(() => createClickFx(profile, ground), [profile, ground]);
+  useEffect(() => {
+    scene.add(clickFx.group);
+    return () => {
+      scene.remove(clickFx.group);
+      clickFx.dispose();
+    };
+  }, [scene, clickFx]);
+  const stormFlash = useRef({ flash: 0, active: false });
+  const clickLog = useRef<number[]>([]);
+  const clickDebug = useRef({ count: 0, skipped: 0 });
+  const clickTime = useRef({ freeze: false, skip: 0 });
+  const tryStrike = useMemo(() => {
+    const proxies: SectProxy[] = (Object.keys(SITES) as SiteKey[]).map((k) => {
+      const w = A2W(SITES[k].a, SITES[k].b);
+      return { x: w.x, z: w.z, r: SITES[k].r * 1.1, top: world.siteHeights[k] + 6.8 };
+    });
+    const half = world.worldSize / 2;
+    const bounds = { minX: -half, maxX: half, minZ: -half, maxZ: half };
+    const last = { at: -Infinity };
+    // the flash budget is 3 per second in total: skip while a storm flash is on, and leave the storm one slot while it is active
+    return (ray: THREE.Ray, sectHit: boolean, dragPx: number, onUi: boolean, panelOpen: boolean, point?: { x: number; z: number }) => {
+      const now = performance.now() / 1000;
+      let p = null;
+      if (point) p = { x: point.x, y: ground(point.x, point.z), z: point.z };
+      else p = groundPoint(ray.origin, ray.direction, ground, bounds);
+      if (p === null) return;
+      const input = { hitSect: sectHit || hitSect(p, proxies), panelOpen, reduced, onUi, dragPx, now, lastStrikeAt: last.at };
+      let limit = MAX_FLASHES_PER_SECOND;
+      if (stormFlash.current.active) limit -= 1;
+      const log = clickLog.current;
+      while (log.length > 0 && now - log[0] >= 1) log.shift();
+      if (!shouldStrike(input) || stormFlashOn(stormFlash.current.flash) || log.length >= limit) {
+        if (!input.hitSect && !panelOpen && !onUi) clickDebug.current.skipped++;
+        return;
+      }
+      if (!clicks.strike(p, now)) return;
+      last.at = now;
+      log.push(now);
+      clickDebug.current.count++;
+    };
+  }, [world, ground, clicks, reduced]);
+  useEffect(() => {
+    const el = gl.domElement;
+    const down = { x: 0, y: 0 };
+    const rc = new THREE.Raycaster();
+    const ndc = new THREE.Vector2();
+    const groups = (Object.keys(builds) as SiteKey[]).map((k) => builds[k].group);
+    const onDown = (e: PointerEvent) => {
+      down.x = e.clientX;
+      down.y = e.clientY;
+    };
+    const onUp = (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      const r = el.getBoundingClientRect();
+      ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      rc.setFromCamera(ndc, camera);
+      // the same raycast the sect onClick handlers rely on, so a click that opens the panel never also strikes
+      const sectHit = rc.intersectObjects(groups, true).length > 0;
+      tryStrike(rc.ray, sectHit, Math.hypot(e.clientX - down.x, e.clientY - down.y), e.target !== el, active !== null);
+    };
+    el.addEventListener('pointerdown', onDown);
+    el.addEventListener('pointerup', onUp);
+    return () => {
+      el.removeEventListener('pointerdown', onDown);
+      el.removeEventListener('pointerup', onUp);
+    };
+  }, [gl, camera, builds, tryStrike, active]);
+  useEffect(() => {
+    if (!testStorm) return;
+    // debug hook for screenshots (only with ?storm=now): window.__clickStrikeAt(x, z) strikes that ground point,
+    // __clickFreeze stops the strike clock, __clickSeek(s) advances it, __clickStats is { count, skipped }
+    const w = window as unknown as { __clickStrikeAt?: (x: number, z: number) => void; __clickSeek?: (s: number) => void; __clickFreeze?: boolean; __clickStats?: unknown };
+    w.__clickStrikeAt = (x, z) => tryStrike(new THREE.Ray(), false, 0, false, false, { x, z });
+    w.__clickSeek = (sec) => {
+      clickTime.current.skip += sec;
+    };
+    Object.defineProperty(w, '__clickFreeze', { configurable: true, get: () => clickTime.current.freeze, set: (v: boolean) => {
+        clickTime.current.freeze = v;
+      } });
+    w.__clickStats = clickDebug.current;
+    return () => {
+      delete w.__clickStrikeAt;
+      delete w.__clickSeek;
+      delete w.__clickFreeze;
+      delete w.__clickStats;
+    };
+  }, [testStorm, tryStrike]);
+
   useFrame(({ clock }, dt) => {
     const t = clock.elapsedTime;
     if (!reduced) valley.update(t);
@@ -252,6 +346,13 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
     let sdt = Math.min(dt, 0.25);
     if (testStorm && w.__stormFreeze) sdt = 0;
     const storm = stormRef.current;
+    let cdt = Math.min(dt, 0.25);
+    if (clickTime.current.freeze) cdt = 0;
+    cdt += clickTime.current.skip;
+    clickTime.current.skip = 0;
+    const cs = clicks.step(cdt);
+    const px = (size.height * gl.getPixelRatio()) / (2 * Math.tan(((camera as THREE.PerspectiveCamera).fov * Math.PI) / 360));
+    clickFx.update(cs, cdt, px);
     if (storm) {
       let ss = storm.step(sdt + skip.current);
       skip.current = 0;
@@ -262,7 +363,10 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
       }
       seekStrike.current = false;
       if (testStorm) w.__stormState = ss;
-      fx.update(ss, t, (size.height * gl.getPixelRatio()) / (2 * Math.tan(((camera as THREE.PerspectiveCamera).fov * Math.PI) / 360)));
+      fx.update(ss, t, px);
+      stormFlash.current.flash = ss.flash;
+      stormFlash.current.active = ss.phase === 'active';
+      const flash = Math.max(ss.flash, cs.flash);
       if (hemi.current && sun.current && scene.background instanceof THREE.Color && scene.fog) {
         if (!skyBase.have) {
           skyBase.bg.copy(scene.background);
@@ -270,12 +374,12 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
           skyBase.have = true;
         }
         // cloud 0 restores the exact base values; the flash only lifts the hemisphere light
-        hemi.current.intensity = 1.15 * (1 - 0.45 * ss.cloud) + ss.flash * 1.4;
+        hemi.current.intensity = 1.15 * (1 - 0.45 * ss.cloud) + flash * 1.4;
         sun.current.intensity = 3.0 * (1 - 0.75 * ss.cloud);
         // the terrain albedo has its lighting baked in, so the storm's darkening goes through exposure (1 when clear)
-        gl.toneMappingExposure = 1 - 0.4 * ss.cloud + ss.flash * 0.6;
-        scene.background.copy(skyBase.bg).lerp(STORM_SKY, ss.cloud * 0.75).lerp(FLASH_TINT, ss.flash * 0.3);
-        scene.fog.color.copy(skyBase.fog).lerp(STORM_SKY, ss.cloud * 0.75).lerp(FLASH_TINT, ss.flash * 0.3);
+        gl.toneMappingExposure = 1 - 0.4 * ss.cloud + flash * 0.6;
+        scene.background.copy(skyBase.bg).lerp(STORM_SKY, ss.cloud * 0.75).lerp(FLASH_TINT, flash * 0.3);
+        scene.fog.color.copy(skyBase.fog).lerp(STORM_SKY, ss.cloud * 0.75).lerp(FLASH_TINT, flash * 0.3);
       }
     }
 
