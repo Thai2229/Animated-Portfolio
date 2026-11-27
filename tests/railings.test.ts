@@ -30,9 +30,9 @@ afterAll(() => {
 });
 
 describe('railings are attached to the platform or steps they stand on', () => {
-  it('the lake sect has stair, zigzag and pavilion railings', () => {
+  it('the lake sect has zigzag and pavilion railings', () => {
     const names = new Set(sects.lake.rails.map((r) => r.name));
-    expect([...names].sort()).toEqual(['pavilion', 'stair', 'zigzag']);
+    expect([...names].sort()).toEqual(['pavilion', 'zigzag']);
   });
 
   it.each(keys)('%s: every rail post stands on a surface and its base is sunk into it', (key) => {

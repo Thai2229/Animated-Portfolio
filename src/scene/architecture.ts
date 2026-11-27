@@ -1296,7 +1296,6 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     B.railing(pav, pillarsAt.slice(0, 4), 0.35);
     B.railing(pav, pillarsAt.slice(4), 0.35);
     const lakeRails: Rail[] = [];
-    const stairTops: TopBox[] = [];
     const deckTops: TopBox[] = [];
     B.put(pav, sph(0.07, 6, 4), M.gold, 0, 1.52, 0);
     B.put(pav, cone(0.04, 0.22, 6), M.gold, 0, 1.68, 0);
@@ -1324,26 +1323,6 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
         st.rotation.y = -Math.atan2(s1.z - s0.z, s1.x - s0.x);
         st.castShadow = true;
         g.add(st);
-        stairTops.push({ x: st.position.x, z: st.position.z, yaw: st.rotation.y, hx: 0.21, hz: 0.375, top: st.position.y + 0.14 });
-      }
-    }
-    // rails down both sides of the stair: posts sit on the steps (0.375 half width) with their bases sunk into the treads
-    {
-      const s0 = A2W(base.a - 3.2, base.b - 0.6);
-      const s1 = A2W(base.a - 6.0, base.b - 1.4);
-      const len = Math.hypot(s1.x - s0.x, s1.z - s0.z);
-      const px = -(s1.z - s0.z) / len;
-      const pz = (s1.x - s0.x) / len;
-      for (const side of [-1, 1]) {
-        const pts: V3[] = [];
-        for (let k = 0; k <= 5; k++) {
-          // a post on every third step, on its tread (0.1 along from the step centre) and sunk 3 cm into it
-          const t = (k * 3) / 15;
-          const tp = t + 0.1 / len;
-          pts.push([lerp(s0.x, s1.x, tp) + px * side * 0.33, lerp(siteHeights.lake, WATER_Y + 0.3, t) + 0.11, lerp(s0.z, s1.z, tp) + pz * side * 0.33]);
-        }
-        B.railing(g, pts, 0.4);
-        lakeRails.push({ name: 'stair', posts: pts, support: (x, z) => topUnder(stairTops, x, z) });
       }
     }
     const zig = [[base.a - 6.0, base.b - 1.4], [base.a - 6.8, base.b - 2.4], [base.a - 7.6, base.b - 1.4], [LAKE.a + 2.4, LAKE.b + 0.6]];
