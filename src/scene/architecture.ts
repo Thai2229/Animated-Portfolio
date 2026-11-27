@@ -1471,10 +1471,11 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
           lamp.scale.setScalar(0.6);
           lamp.position.set(x, y + 0.95, z);
           g.add(lamp);
-          return;
         }
-        dress(new THREE.SphereGeometry(0.09, 8, 6), x, y + 1.02, z);
-        dress(new THREE.ConeGeometry(0.04, 0.16, 6), x, y + 1.16, z);
+        if (x !== 0) {
+          dress(new THREE.SphereGeometry(0.09, 8, 6), x, y + 1.02, z);
+          dress(new THREE.ConeGeometry(0.04, 0.16, 6), x, y + 1.16, z);
+        }
         if (i === posts.length - 1) return;
         const x1 = posts[i + 1];
         const dy = top(x1) - y;

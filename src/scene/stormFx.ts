@@ -188,7 +188,7 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     for (const r of bolts) r.commit();
   };
 
-  // fire: a pool of DEFAULT_MAX_FIRES slots, each three Points clouds driven entirely by uniforms (no per-frame allocation).
+  // fire: a pool of DEFAULT_MAX_FIRES slots, each three Points clouds driven entirely by uniforms (see the note on update).
   // The geometries are shared; every slot has its own uniforms.
   const makeGeo = (n: number) => {
     const g = new THREE.BufferGeometry();
@@ -203,7 +203,7 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     { geo: makeGeo(Math.round(70 * third)), speed: '0.6', body: SPARK_BODY, color: SPARK_COLOR, additive: true },
     { geo: makeGeo(Math.round(70 * third)), speed: '0.13', body: SMOKE_BODY, color: SMOKE_COLOR, additive: false },
   ];
-  const slots: { uniforms: Record<string, { value: number | THREE.Vector3 }>; sets: THREE.Points[]; tree: number }[] = [];
+  const slots: { uniforms: Record<string, { value: number | THREE.Vector3 }>; sets: THREE.Points[]; tree: number; orig: THREE.Color; level: number }[] = [];
   for (let i = 0; i < DEFAULT_MAX_FIRES; i++) {
     const uniforms = {
       uTime: { value: 0 }, uBurn: { value: 0 }, uPx: { value: 1 },
@@ -224,7 +224,7 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
       group.add(pts);
       return pts;
     });
-    slots.push({ uniforms, sets, tree: -1 });
+    slots.push({ uniforms, sets, tree: -1, orig: new THREE.Color(), level: 0 });
   }
   // a few shared lights, always in the scene (toggling lights would recompile every material), never casting shadows;
   // they follow the brightest fires and the rest rely on the flames' own glow
@@ -243,8 +243,7 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
   let tree = -1;
   let lastAge = Infinity;
   let strikes = 0;
-  // trees that are burning now: their original crown colour and how charred they are written so far
-  const charring = new Map<number, { orig: THREE.Color; level: number }>();
+  const lit = new Array<boolean>(DEFAULT_MAX_FIRES).fill(false);
   const writeChar = (i: number, orig: THREE.Color, c: number) => {
     const ic = crown.instanceColor!;
     tmp.copy(orig).lerp(CHARCOAL, c);
@@ -252,7 +251,21 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     ic.addUpdateRange(i * 3, 3);
     ic.needsUpdate = true;
   };
+  const slotOf = (treeIndex: number) => {
+    for (let i = 0; i < slots.length; i++) {
+      if (slots[i].tree === treeIndex) return slots[i];
+    }
+    return null;
+  };
+  const freeSlot = () => {
+    for (let i = 0; i < slots.length; i++) {
+      if (slots[i].tree < 0) return slots[i];
+    }
+    return null;
+  };
 
+  // the fire part of the frame loop builds no closures or temporary arrays: plain loops over preallocated slots and lights,
+  // and the array fires.step returns is reused; objects are only created when a strike starts
   const update = (s: StormState, t: number, px: number, dt: number) => {
     // clouds
     const c = s.cloud;
@@ -273,12 +286,12 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
       if (st.treeIndex !== tree || st.age < lastAge) {
         // a new strike: locate the tree top, build the bolt and light the tree (refused when 6 fires already burn)
         tree = st.treeIndex;
-        const m = world.treeMatrices;
+        const tm = world.treeMatrices;
         const o = tree * 16;
-        treeTop.set(m[o + 12], m[o + 13] + 1.05 * m[o + 5], m[o + 14]);
+        treeTop.set(tm[o + 12], tm[o + 13] + 1.05 * tm[o + 5], tm[o + 14]);
         strikes++;
         strikeBolt(tree * 31 + strikes, treeTop);
-        fires.ignite(tree, t);
+        fires.ignite(tree);
       }
       lastAge = st.age;
       const on = st.age < BOLT_SECONDS;
@@ -290,56 +303,62 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
       }
     }
 
-    // every active fire (storm or click) gets a slot; trees whose fire ended are charred for good. The fires are
+    // every active fire (storm or click) gets a slot; a tree whose fire ended is charred for good. The fires are
     // registered before stepping, so one that starts and ends inside a single big step (debug seek) still chars.
     const m = world.treeMatrices;
-    for (const a of fires.step(0)) {
-      const free = slots.find((sl) => sl.tree < 0);
-      if (slots.some((sl) => sl.tree === a.treeIndex) || !free) continue;
-      free.tree = a.treeIndex;
-      const o = a.treeIndex * 16;
+    const started = fires.step(0);
+    for (let i = 0; i < started.length; i++) {
+      const free = freeSlot();
+      if (slotOf(started[i].treeIndex) !== null || free === null) continue;
+      const o = started[i].treeIndex * 16;
+      free.tree = started[i].treeIndex;
+      free.level = 0;
       (free.uniforms.uOrigin.value as THREE.Vector3).set(m[o + 12], m[o + 13] + 1.05 * m[o + 5], m[o + 14]);
       free.uniforms.uScale.value = m[o + 5];
-      const orig = new THREE.Color();
-      crown.getColorAt(a.treeIndex, orig);
-      charring.set(a.treeIndex, { orig, level: 0 });
+      crown.getColorAt(free.tree, free.orig);
     }
     const active = fires.step(dt);
-    for (const sl of slots) {
-      const a = active.find((x) => x.treeIndex === sl.tree);
-      if (!a) sl.tree = -1;
+    for (let i = 0; i < slots.length; i++) {
+      const sl = slots[i];
+      let a = null;
+      for (let j = 0; j < active.length; j++) {
+        if (active[j].treeIndex === sl.tree) a = active[j];
+      }
       let b = 0;
-      if (a) b = a.burn;
+      if (a === null && sl.tree >= 0) {
+        writeChar(sl.tree, sl.orig, 1);
+        sl.tree = -1;
+      }
+      if (a !== null) {
+        b = a.burn;
+        // existing storm look: charred over the first CHAR_SECONDS
+        const ch = Math.min(1, a.age / CHAR_SECONDS);
+        if (ch !== sl.level) {
+          sl.level = ch;
+          writeChar(sl.tree, sl.orig, ch);
+        }
+      }
       sl.uniforms.uTime.value = t;
       sl.uniforms.uBurn.value = b;
       sl.uniforms.uPx.value = px;
-      for (const p of sl.sets) p.visible = b > 0;
-      if (a) {
-        const ch = Math.min(1, a.age / CHAR_SECONDS);
-        const cs = charring.get(a.treeIndex)!;
-        if (ch !== cs.level) {
-          cs.level = ch;
-          writeChar(a.treeIndex, cs.orig, ch);
-        }
-      }
-    }
-    for (const [i, cs] of charring) {
-      if (active.some((a) => a.treeIndex === i)) continue;
-      writeChar(i, cs.orig, 1);
-      charring.delete(i);
+      for (let j = 0; j < sl.sets.length; j++) sl.sets[j].visible = b > 0;
     }
     // the lights follow the brightest fires; slow flicker (about 1.4 Hz, no strobing), scaled by burn
-    const brightest = active.slice().sort((x, y) => y.burn - x.burn);
-    lights.forEach((light, i) => {
-      const a = brightest[i];
-      if (!a) {
-        light.intensity = 0;
-        return;
+    for (let j = 0; j < active.length; j++) lit[j] = false;
+    for (let i = 0; i < lights.length; i++) {
+      let pick = -1;
+      for (let j = 0; j < active.length; j++) {
+        if (!lit[j] && (pick < 0 || active[j].burn > active[pick].burn)) pick = j;
       }
-      const o = a.treeIndex * 16;
-      light.position.set(m[o + 12], m[o + 13] + 1.05 * m[o + 5], m[o + 14]);
-      light.intensity = a.burn * (14 + 4 * Math.sin(t * 9));
-    });
+      if (pick < 0) {
+        lights[i].intensity = 0;
+        continue;
+      }
+      lit[pick] = true;
+      const o = active[pick].treeIndex * 16;
+      lights[i].position.set(m[o + 12], m[o + 13] + 1.05 * m[o + 5], m[o + 14]);
+      lights[i].intensity = active[pick].burn * (14 + 4 * Math.sin(t * 9));
+    }
   };
 
   const dispose = () => {

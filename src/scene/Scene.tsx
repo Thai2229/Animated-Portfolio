@@ -295,7 +295,7 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
       }
       if (!clicks.strike(p, now)) return;
       // the bolt sets the nearest trees alight; reduced motion never reaches here, so it never starts a fire
-      clickIgnition(p, treeAt, fires, { now });
+      clickIgnition(p, treeAt, fires);
       last.at = now;
       log.push(now);
       clickDebug.current.count++;

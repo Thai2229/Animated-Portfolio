@@ -10,13 +10,13 @@ import { burn, BURN_DURATION } from '@/scene/storm';
 describe('createFires', () => {
   it('ignites a tree and reports it with age 0 and burn 0 at dt 0', () => {
     const f = createFires({});
-    expect(f.ignite(3, 0)).toBe(true);
+    expect(f.ignite(3)).toBe(true);
     expect(f.step(0)).toEqual([{ treeIndex: 3, age: 0, burn: 0 }]);
   });
 
   it('reports age and burn(age) after stepping', () => {
     const f = createFires({});
-    f.ignite(1, 0);
+    f.ignite(1);
     f.step(1);
     const [a] = f.step(2);
     expect(a.treeIndex).toBe(1);
@@ -27,14 +27,14 @@ describe('createFires', () => {
 
   it('refuses a tree that is already burning', () => {
     const f = createFires({});
-    expect(f.ignite(2, 0)).toBe(true);
-    expect(f.ignite(2, 1)).toBe(false);
+    expect(f.ignite(2)).toBe(true);
+    expect(f.ignite(2)).toBe(false);
     expect(f.step(0)).toHaveLength(1);
   });
 
   it('uses BURN_DURATION by default and then marks the tree charred', () => {
     const f = createFires({});
-    f.ignite(4, 0);
+    f.ignite(4);
     expect(f.isCharred(4)).toBe(false);
     f.step(BURN_DURATION - 0.5);
     expect(f.step(0)).toHaveLength(1);
@@ -45,7 +45,7 @@ describe('createFires', () => {
 
   it('honours a custom burnSeconds', () => {
     const f = createFires({ burnSeconds: 2 });
-    f.ignite(0, 0);
+    f.ignite(0);
     expect(f.step(1.9)).toHaveLength(1);
     expect(f.step(0.2)).toEqual([]);
     expect(f.isCharred(0)).toBe(true);
@@ -53,9 +53,9 @@ describe('createFires', () => {
 
   it('does not let a charred tree re-ignite', () => {
     const f = createFires({ burnSeconds: 1 });
-    f.ignite(7, 0);
+    f.ignite(7);
     f.step(1.5);
-    expect(f.ignite(7, 2)).toBe(false);
+    expect(f.ignite(7)).toBe(false);
     expect(f.step(0)).toEqual([]);
     expect(f.isCharred(7)).toBe(true);
   });
@@ -69,42 +69,42 @@ describe('createFires', () => {
 
   it('allows 6 fires by default and refuses the 7th', () => {
     const f = createFires({});
-    for (let i = 0; i < 6; i++) expect(f.ignite(i, 0)).toBe(true);
-    expect(f.ignite(6, 0)).toBe(false);
+    for (let i = 0; i < 6; i++) expect(f.ignite(i)).toBe(true);
+    expect(f.ignite(6)).toBe(false);
     expect(f.step(0).map((x) => x.treeIndex)).toEqual([0, 1, 2, 3, 4, 5]);
   });
 
   it('keeps the oldest fire when full and frees a slot when one ends', () => {
     const f = createFires({ maxFires: 2, burnSeconds: 5 });
-    f.ignite(0, 0);
+    f.ignite(0);
     f.step(3);
-    f.ignite(1, 3);
-    expect(f.ignite(2, 3)).toBe(false);
+    f.ignite(1);
+    expect(f.ignite(2)).toBe(false);
     expect(f.step(0).map((x) => x.treeIndex)).toEqual([0, 1]);
     f.step(2.5); // tree 0 ends at age 5
     expect(f.isCharred(0)).toBe(true);
-    expect(f.ignite(2, 5.5)).toBe(true);
+    expect(f.ignite(2)).toBe(true);
     expect(f.step(0).map((x) => x.treeIndex).sort()).toEqual([1, 2]);
   });
 
   it('refused ignitions do not mark the tree as charred or burning', () => {
     const f = createFires({ maxFires: 1, burnSeconds: 1 });
-    f.ignite(0, 0);
-    expect(f.ignite(1, 0)).toBe(false);
+    f.ignite(0);
+    expect(f.ignite(1)).toBe(false);
     f.step(2);
     expect(f.isCharred(1)).toBe(false);
-    expect(f.ignite(1, 2)).toBe(true);
+    expect(f.ignite(1)).toBe(true);
   });
 
   it('refuses invalid indices', () => {
     const f = createFires({});
-    for (const bad of [-1, NaN, 1.5, Infinity, -Infinity]) expect(f.ignite(bad, 0)).toBe(false);
+    for (const bad of [-1, NaN, 1.5, Infinity, -Infinity]) expect(f.ignite(bad)).toBe(false);
     expect(f.step(0)).toEqual([]);
   });
 
   it('handles dt 0, negative dt and a huge dt', () => {
     const f = createFires({});
-    f.ignite(0, 0);
+    f.ignite(0);
     f.step(1);
     expect(f.step(0)[0].age).toBeCloseTo(1, 9);
     expect(f.step(-5)[0].age).toBeCloseTo(1, 9);
@@ -114,7 +114,7 @@ describe('createFires', () => {
 
   it('keeps burn within [0, 1] for every active fire', () => {
     const f = createFires({});
-    f.ignite(0, 0);
+    f.ignite(0);
     for (let i = 0; i < 700; i++) {
       for (const a of f.step(0.03)) {
         expect(a.burn).toBeGreaterThanOrEqual(0);
@@ -128,7 +128,7 @@ describe('createFires', () => {
       const f = createFires({ maxFires: 3, burnSeconds: 4 });
       const out: unknown[] = [];
       for (let i = 0; i < 40; i++) {
-        f.ignite(i % 7, i * 0.25);
+        f.ignite(i % 7);
         out.push(f.step(0.25).map((x) => ({ ...x })));
       }
       return out;
@@ -136,9 +136,9 @@ describe('createFires', () => {
     expect(run()).toEqual(run());
     const a = createFires({});
     const b = createFires({});
-    a.ignite(1, 0);
+    a.ignite(1);
     expect(b.step(0)).toEqual([]);
-    expect(b.ignite(1, 0)).toBe(true);
+    expect(b.ignite(1)).toBe(true);
   });
 });
 
@@ -235,13 +235,13 @@ describe('clickIgnition', () => {
 
   it('skips burning trees and fills with the next nearest', () => {
     const f = createFires({});
-    f.ignite(0, 0);
+    f.ignite(0);
     expect(clickIgnition(p, pos, f, { radius: 2, max: 2 })).toEqual([1, 2]);
   });
 
   it('skips charred trees', () => {
     const f = createFires({ burnSeconds: 1 });
-    f.ignite(0, 0);
+    f.ignite(0);
     f.step(2);
     expect(clickIgnition(p, pos, f, { radius: 2, max: 2 })).toEqual([1, 2]);
   });
@@ -254,7 +254,7 @@ describe('clickIgnition', () => {
 
   it('honours the fire limit shared with other ignitions (e.g. the storm)', () => {
     const f = createFires({ maxFires: 2 });
-    f.ignite(3, 0); // storm strike uses a slot
+    f.ignite(3); // storm strike uses a slot
     expect(clickIgnition(p, pos, f, { radius: 2, max: 3 })).toEqual([0]);
     expect(f.step(0)).toHaveLength(2);
     expect(clickIgnition(p, pos, f, { radius: 2, max: 3 })).toEqual([]);

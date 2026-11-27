@@ -111,6 +111,41 @@ describe('the stone bridge below the waterfall', () => {
     expect(W2A(centre.x, centre.z).a).toBeCloseTo(BRIDGE.a, 6);
   });
 
+  it('the balustrade is continuous on both sides along the whole deck', () => {
+    // the red lacquered line runs on top of every panel, so its s-ranges show where the rail is
+    const red = (bridge.children as THREE.Mesh[]).filter((m) => m.isMesh && (m.material as THREE.MeshStandardMaterial).color.getHex() === 0x8f2a1f);
+    expect(red.length).toBeGreaterThan(0);
+    const v = new THREE.Vector3();
+    const spans: Record<string, [number, number][]> = { '-1': [], '1': [] };
+    for (const m of red) {
+      const pos = m.geometry.attributes.position;
+      for (let i = 0; i + 2 < pos.count; i += 3) {
+        const q = [0, 1, 2].map((k) => {
+          v.fromBufferAttribute(pos, i + k).applyMatrix4(m.matrixWorld);
+          const dx = v.x - centre.x;
+          const dz = v.z - centre.z;
+          return { s: dx * ax + dz * az, t: dx * -az + dz * ax };
+        });
+        const t = (q[0].t + q[1].t + q[2].t) / 3;
+        if (Math.abs(t) < 0.5) continue;
+        spans[String(Math.sign(t))].push([Math.min(...q.map((p) => p.s)), Math.max(...q.map((p) => p.s))]);
+      }
+    }
+    for (const side of ['-1', '1']) {
+      const list = spans[side].sort((p, q) => p[0] - q[0]);
+      expect(list.length, `side ${side}`).toBeGreaterThan(0);
+      let reach = -BRIDGE.half;
+      let widest = 0;
+      for (const [s0, s1] of list) {
+        widest = Math.max(widest, s0 - reach);
+        reach = Math.max(reach, s1);
+      }
+      // only the end posts may break the line; a missing panel would leave 0.9
+      expect(widest, `side ${side}`).toBeLessThan(0.4);
+      expect(reach, `side ${side}`).toBeGreaterThan(BRIDGE.half - 0.4);
+    }
+  });
+
   it('never blocks clicks', () => {
     const rc = new THREE.Raycaster(new THREE.Vector3(centre.x, 20, centre.z), new THREE.Vector3(0, -1, 0));
     expect(rc.intersectObject(bridge, true)).toEqual([]);

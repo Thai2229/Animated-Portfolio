@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import * as THREE from 'three';
-import { buildSects, pointHullDist } from '@/scene/architecture';
+import { buildSects } from '@/scene/architecture';
 import type { SiteKey } from '@/terrain/layout';
 
 // minimal 2d-canvas stub so the procedural textures can be built without a DOM
@@ -19,10 +19,10 @@ afterAll(() => {
   (globalThis as { document?: unknown }).document = saved;
 });
 
-type Tri = { y: number; up: boolean; x0: number; x1: number; z0: number; z1: number; mesh: number };
+type Tri = { ax: number; az: number; ay: number; bx: number; bz: number; by: number; cx: number; cz: number; cy: number; flatUp: boolean; mesh: number };
 
-// every flat horizontal triangle of a sect, in world space
-function flatTriangles(root: THREE.Object3D) {
+// every non-vertical triangle of a sect in world space; flatUp marks the level, upward-facing ones
+function triangles(root: THREE.Object3D) {
   root.updateMatrixWorld(true);
   const out: Tri[] = [];
   let id = 0;
@@ -47,13 +47,11 @@ function flatTriangles(root: THREE.Object3D) {
       b.fromBufferAttribute(pos, at(1)).applyMatrix4(m.matrixWorld);
       c.fromBufferAttribute(pos, at(2)).applyMatrix4(m.matrixWorld);
       n.crossVectors(b.clone().sub(a), c.clone().sub(a));
-      const area = n.length() / 2;
-      if (area < 1e-4 || Math.abs(n.y) / n.length() < 0.9999) continue;
+      const len = n.length();
+      if (len / 2 < 1e-4 || Math.abs(n.y) / len < 0.05) continue;
       out.push({
-        y: (a.y + b.y + c.y) / 3,
-        up: n.y > 0,
-        x0: Math.min(a.x, b.x, c.x), x1: Math.max(a.x, b.x, c.x),
-        z0: Math.min(a.z, b.z, c.z), z1: Math.max(a.z, b.z, c.z),
+        ax: a.x, az: a.z, ay: a.y, bx: b.x, bz: b.z, by: b.y, cx: c.x, cz: c.z, cy: c.y,
+        flatUp: n.y > 0 && Math.abs(n.y) / len > 0.9999 && Math.abs(a.y - b.y) < 1e-4 && Math.abs(a.y - c.y) < 1e-4,
         mesh: id,
       });
     }
@@ -61,29 +59,44 @@ function flatTriangles(root: THREE.Object3D) {
   return out;
 }
 
-// the two open pavilions: a wood floor sat on a granite pad with the same top height, which z-fought and made the floor
-// and the roof shadow on it flicker as the camera drifted
-describe('no two surfaces of a pavilion share a plane (that z-fights and flickers, shadows included)', () => {
-  it.each([['ledge', 'pavilion'], ['lake', 'water pavilion']] as [SiteKey, string][])('%s: %s', (key, name) => {
+// height of the triangle over (x, z), or null when the point is outside it
+function heightOver(t: Tri, x: number, z: number) {
+  const d = (t.bz - t.cz) * (t.ax - t.cx) + (t.cx - t.bx) * (t.az - t.cz);
+  const u = ((t.bz - t.cz) * (x - t.cx) + (t.cx - t.bx) * (z - t.cz)) / d;
+  const v = ((t.cz - t.az) * (x - t.cx) + (t.ax - t.cx) * (z - t.cz)) / d;
+  const w = 1 - u - v;
+  if (u < 0 || v < 0 || w < 0) return null;
+  return u * t.ay + v * t.by + w * t.cy;
+}
+
+// Two level, upward-facing surfaces of different meshes at the same height over the same ground z-fight, so the
+// surface (and the shadows on it) flickers as the camera moves. Pairs with another level surface just over them are buried and fine.
+describe('no two visible surfaces of a sect share a plane', () => {
+  it.each(['ledge', 'valley', 'lake'] as SiteKey[])('%s', (key) => {
     const sect = buildSects(() => 0, { ledge: 0, valley: 0, lake: 0 }, true)[key];
-    const hull = sect.footprints.find((f) => f.name === name)!.hull;
-    const tris = flatTriangles(sect.group).filter((t) => pointHullDist([(t.x0 + t.x1) / 2, (t.z0 + t.z1) / 2], hull) === 0);
-    expect(tris.length).toBeGreaterThan(5);
-    const buckets = new Map<number, Tri[]>();
-    for (const t of tris) {
-      const k = Math.round(t.y / 0.004);
-      if (!buckets.has(k)) buckets.set(k, []);
-      buckets.get(k)!.push(t);
-    }
+    const flat = triangles(sect.group).filter((t) => t.flatUp);
     const bad = new Set<string>();
-    for (const [k, list] of buckets) {
-      const all = list.concat(buckets.get(k + 1) ?? []);
-      for (const t of list) {
-        for (const u of all) {
-          if (u === t || u.mesh === t.mesh || u.up !== t.up || Math.abs(u.y - t.y) > 0.003) continue;
-          const ox = Math.min(t.x1, u.x1) - Math.max(t.x0, u.x0);
-          const oz = Math.min(t.z1, u.z1) - Math.max(t.z0, u.z0);
-          if (ox > 0.05 && oz > 0.05) bad.add(`y=${t.y.toFixed(3)} near x=${((t.x0 + t.x1) / 2).toFixed(2)} z=${((t.z0 + t.z1) / 2).toFixed(2)}`);
+    for (let i = 0; i < flat.length; i++) {
+      for (let j = i + 1; j < flat.length; j++) {
+        const t = flat[i];
+        const u = flat[j];
+        if (u.mesh === t.mesh || Math.abs(u.ay - t.ay) > 0.003) continue;
+        // sample the overlap of their bounding boxes; a point inside both triangles is a shared surface
+        const x0 = Math.max(Math.min(t.ax, t.bx, t.cx), Math.min(u.ax, u.bx, u.cx));
+        const x1 = Math.min(Math.max(t.ax, t.bx, t.cx), Math.max(u.ax, u.bx, u.cx));
+        const z0 = Math.max(Math.min(t.az, t.bz, t.cz), Math.min(u.az, u.bz, u.cz));
+        const z1 = Math.min(Math.max(t.az, t.bz, t.cz), Math.max(u.az, u.bz, u.cz));
+        if (x1 - x0 < 0.02 || z1 - z0 < 0.02) continue;
+        for (const [fx, fz] of [[0.5, 0.5], [0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]]) {
+          const x = x0 + (x1 - x0) * fx;
+          const z = z0 + (z1 - z0) * fz;
+          if (heightOver(t, x, z) === null || heightOver(u, x, z) === null) continue;
+          // buried: a level surface lies just over it (a cap 0.5 to 6 cm higher), so neither is seen
+          const buried = flat.some((q) => {
+            const h = heightOver(q, x, z);
+            return h !== null && h > t.ay + 0.005 && h < t.ay + 0.06;
+          });
+          if (!buried) bad.add(`y=${t.ay.toFixed(3)} near x=${x.toFixed(2)} z=${z.toFixed(2)}`);
         }
       }
     }

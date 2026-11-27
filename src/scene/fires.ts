@@ -4,11 +4,11 @@ import { BURN_DURATION, burn, type Vec3 } from './storm';
 export type FiresOpts = { maxFires?: number; burnSeconds?: number };
 export type ActiveFire = { treeIndex: number; age: number; burn: number };
 export type Fires = {
-  ignite: (treeIndex: number, now: number) => boolean;
+  ignite: (treeIndex: number) => boolean;
   step: (dt: number) => ActiveFire[];
   isCharred: (treeIndex: number) => boolean;
 };
-export type ClickIgnitionOpts = { radius?: number; max?: number; now?: number };
+export type ClickIgnitionOpts = { radius?: number; max?: number };
 
 export const DEFAULT_MAX_FIRES = 6;
 export const CLICK_IGNITE_RADIUS = 1.4;
@@ -18,27 +18,46 @@ export const VERTICAL_TOLERANCE = 2;
 export function createFires(opts: FiresOpts = {}): Fires {
   const maxFires = opts.maxFires ?? DEFAULT_MAX_FIRES;
   const burnSeconds = opts.burnSeconds ?? BURN_DURATION;
-  // own clock, advanced by step(); `now` of ignite is accepted for the caller's convenience but the fire starts at this clock
+  // own clock, advanced by step(); a fire starts at the clock when it is lit
   let clock = 0;
-  const active: { treeIndex: number; start: number }[] = [];
+  const trees: number[] = [];
+  const starts: number[] = [];
   const charred = new Set<number>();
-  const out = () => active.map((f) => ({ treeIndex: f.treeIndex, age: clock - f.start, burn: burn(clock - f.start) }));
+  // step() hands out the same array and objects every call, so the frame loop allocates nothing; copy what you keep
+  const out: ActiveFire[] = [];
   return {
-    ignite: (treeIndex, now) => {
-      void now;
-      if (!Number.isInteger(treeIndex) || treeIndex < 0 || charred.has(treeIndex) || active.some((f) => f.treeIndex === treeIndex) || active.length >= maxFires) return false;
-      active.push({ treeIndex, start: clock });
+    ignite: (treeIndex) => {
+      if (!Number.isInteger(treeIndex) || treeIndex < 0 || charred.has(treeIndex) || trees.length >= maxFires) return false;
+      for (let i = 0; i < trees.length; i++) {
+        if (trees[i] === treeIndex) return false;
+      }
+      trees.push(treeIndex);
+      starts.push(clock);
       return true;
     },
     step: (dt) => {
       if (dt > 0) clock += dt;
-      for (let i = active.length - 1; i >= 0; i--) {
-        if (clock - active[i].start >= burnSeconds) {
-          charred.add(active[i].treeIndex);
-          active.splice(i, 1);
+      let n = 0;
+      for (let i = 0; i < trees.length; i++) {
+        const age = clock - starts[i];
+        if (age >= burnSeconds) {
+          charred.add(trees[i]);
+          continue;
         }
+        trees[n] = trees[i];
+        starts[n] = starts[i];
+        n++;
       }
-      return out();
+      trees.length = n;
+      starts.length = n;
+      while (out.length < n) out.push({ treeIndex: 0, age: 0, burn: 0 });
+      out.length = n;
+      for (let i = 0; i < n; i++) {
+        out[i].treeIndex = trees[i];
+        out[i].age = clock - starts[i];
+        out[i].burn = burn(out[i].age);
+      }
+      return out;
     },
     isCharred: (treeIndex) => charred.has(treeIndex),
   };
@@ -71,7 +90,7 @@ export function clickIgnition(
   const lit: number[] = [];
   for (const i of pickTreesNear(point, positions, opts.radius ?? CLICK_IGNITE_RADIUS, positions.length)) {
     if (lit.length >= max) break;
-    if (fires.ignite(i, opts.now ?? 0)) lit.push(i);
+    if (fires.ignite(i)) lit.push(i);
   }
   return lit;
 }
