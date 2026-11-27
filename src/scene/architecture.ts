@@ -1,7 +1,7 @@
 // Buildings ported from the mock (vanilla three objects). Each sect gets its own material set so it can glow on hover.
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
-import { A2W, SITES, LAKE, WATER_Y, type SiteKey } from '../terrain/layout';
+import { A2W, BRIDGE, SITES, LAKE, WATER_Y, type SiteKey } from '../terrain/layout';
 
 type V3 = [number, number, number];
 
@@ -91,6 +91,41 @@ function stoneTexture() {
   return t;
 }
 
+// bridge masonry: coursed blocks with mortar, stains and a little lichen; tiles every 1.6 world units (see dress())
+function bridgeTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#6d6a60';
+  g.fillRect(0, 0, 256, 256);
+  for (let y = 0; y < 256; y += 32) {
+    let x = -((y / 32) % 2) * 30;
+    while (x < 256) {
+      const w = 44 + rnd() * 40;
+      const k = rnd();
+      g.fillStyle = `rgb(${150 + k * 38},${146 + k * 34},${134 + k * 30})`;
+      g.fillRect(x + 2, y + 2, w - 4, 28);
+      for (let i = 0; i < 5; i++) {
+        g.fillStyle = `rgba(40,38,30,${0.05 + rnd() * 0.1})`;
+        g.fillRect(x + rnd() * w, y + rnd() * 28, 2 + rnd() * 9, 2 + rnd() * 4);
+      }
+      if (rnd() < 0.3) {
+        g.fillStyle = 'rgba(120,150,80,0.22)';
+        g.fillRect(x + rnd() * w * 0.6, y + 4 + rnd() * 16, 8 + rnd() * 18, 4 + rnd() * 8);
+      }
+      x += w;
+    }
+  }
+  for (let i = 0; i < 9; i++) {
+    g.fillStyle = 'rgba(30,28,22,0.07)';
+    g.fillRect(rnd() * 256, 0, 2 + rnd() * 4, 256);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+
 let TEXS: Record<string, THREE.CanvasTexture> | null = null;
 function textures() {
   if (!TEXS) {
@@ -101,6 +136,7 @@ function textures() {
       lattice: latticeTexture(),
       stone: stoneTexture(),
       paving: stoneTexture(),
+      bridge: bridgeTexture(),
     };
   }
   return TEXS;
@@ -118,6 +154,7 @@ export function createMats() {
     plaster: std({ color: '#e4dccb', roughness: 0.9 }),
     stone: std({ map: T.stone, roughness: 0.95 }),
     paving: std({ map: T.paving, roughness: 0.95 }),
+    bridge: std({ map: T.bridge, roughness: 0.95, vertexColors: true }),
     marble: std({ color: '#e8e4dc', roughness: 0.7 }),
     bracket: std({ color: '#2f5a5c', roughness: 0.7 }),
     gold: std({ color: '#c8a04a', roughness: 0.35, metalness: 0.6 }),
@@ -1067,7 +1104,10 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     pr.rotation.y = Math.PI / 4;
     pr.position.y = 0.82;
     pav.add(pr);
-    pav.add(mesh(box(1.2, 0.08, 1.2), M.wood));
+    // the wood floor stands 3 cm proud of the granite pad: equal top heights z-fight and the floor and its shadow flicker
+    const floor = mesh(box(1.2, 0.08, 1.2), M.wood);
+    floor.position.y = 0.03;
+    pav.add(floor);
     B.put(pav, box(1.5, 0.06, 1.5), M.granite, 0, 0.01, 0);
     B.put(pav, sph(0.07, 6, 4), M.gold, 0, 1.3, 0);
     B.put(pav, cone(0.04, 0.2, 6), M.gold, 0, 1.43, 0);
@@ -1295,28 +1335,184 @@ export function buildSects(heightAt: (x: number, z: number) => number, siteHeigh
     return collect(g, M, fp);
   })();
 
-  // arched stone bridge where the path crosses the river
+  // hump-backed stone arch bridge where the path crosses the river below the fall. It is built in a frame along the
+  // path (x along the deck, west to east; z across; y world height); both ends are buried in the banks
   const bridge = (() => {
     const M = createMats();
-    const p = A2W(1.25, 10.9);
-    const q = A2W(-0.9, 10.3);
-    const len = Math.hypot(q.x - p.x, q.z - p.z) + 1.4;
-    const shape = new THREE.Shape();
-    shape.moveTo(-len / 2, 0);
-    shape.quadraticCurveTo(0, 1.4, len / 2, 0);
-    shape.lineTo(len / 2, -0.3);
-    shape.lineTo(-len / 2, -0.3);
-    const hole = new THREE.Path();
-    hole.moveTo(-len * 0.32, -0.3);
-    hole.quadraticCurveTo(0, 0.9, len * 0.32, -0.3);
-    shape.holes.push(hole);
-    const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.7, bevelEnabled: false });
-    geo.translate(0, 0, -0.35);
-    const br = mesh(geo, M.stone);
-    br.position.set((p.x + q.x) / 2, 0.15, (p.z + q.z) / 2);
-    br.rotation.y = -Math.atan2(q.z - p.z, q.x - p.x);
-    br.castShadow = true;
-    return br;
+    const B = builders(M, fine);
+    const g = new THREE.Group();
+    const c = A2W(BRIDGE.a, BRIDGE.b);
+    const e = A2W(BRIDGE.a + BRIDGE.dirA, BRIDGE.b + BRIDGE.dirB);
+    const th = Math.atan2(-(e.z - c.z), e.x - c.x);
+    const ct = Math.cos(th);
+    const sn = Math.sin(th);
+    const gh = (x: number, z: number) => heightAt(c.x + x * ct + z * sn, c.z - x * sn + z * ct);
+    const END = BRIDGE.half;
+    const SPAN = 1.8; // half the arch opening
+    const ABUT = 2.7; // abutments and the hump end here, steps run on to END
+    const HW = 1.0; // half the masonry width
+    // overlapping blocks get slightly different widths so their side faces are never coplanar (that z-fights)
+    const W_ABUT = 2 * (HW - 0.03);
+    const W_FILL = 2 * (HW - 0.06);
+    const W_DECK = 2 * (HW + 0.03);
+    const PZ = 0.88; // balustrade posts
+    const Y_END = 2.1;
+    const Y_CROWN = 2.45;
+    const gEnd = { w: gh(-END, 0), e: gh(END, 0) };
+    // top of the deck (and of the stair ramp the balustrade follows)
+    const top = (x: number) => {
+      const ax = Math.abs(x);
+      if (ax <= ABUT) return Y_END + (Y_CROWN - Y_END) * (1 - (ax / ABUT) ** 2);
+      let ground = gEnd.e;
+      if (x < 0) ground = gEnd.w;
+      return Y_END + ((ground - Y_END) * (ax - ABUT)) / (END - ABUT);
+    };
+
+    // stone geometry with world-scale UVs (one texture tile per 1.6 units) and moss tinting the vertex colours near the waterline
+    const q = new THREE.Quaternion();
+    const eu = new THREE.Euler();
+    const mt = new THREE.Matrix4();
+    const one = new THREE.Vector3(1, 1, 1);
+    const MOSS = new THREE.Color('#6f8f45');
+    const tint = new THREE.Color();
+    const dress = (geo: THREE.BufferGeometry, px: number, py: number, pz: number, rz = 0, ry = 0) => {
+      mt.compose(new THREE.Vector3(px, py, pz), q.setFromEuler(eu.set(0, ry, rz)), one);
+      let src = geo.clone();
+      if (geo.index) src = geo.toNonIndexed();
+      const o = src.applyMatrix4(mt);
+      const pos = o.attributes.position;
+      const nor = o.attributes.normal;
+      const uv = new Float32Array(pos.count * 2);
+      const col = new Float32Array(pos.count * 3);
+      for (let i = 0; i < pos.count; i++) {
+        const nx = Math.abs(nor.getX(i));
+        const ny = Math.abs(nor.getY(i));
+        const nz = Math.abs(nor.getZ(i));
+        let u = pos.getX(i);
+        let v = pos.getY(i);
+        if (nx > nz && nx >= ny) u = pos.getZ(i);
+        if (ny > nx && ny > nz) v = pos.getZ(i);
+        uv[i * 2] = u * 0.625;
+        uv[i * 2 + 1] = v * 0.625;
+        const k = Math.min(1, Math.max(0, (0.9 - pos.getY(i)) / 1.3)) * 0.75;
+        tint.setRGB(1, 1, 1).lerp(MOSS, k);
+        col.set([tint.r, tint.g, tint.b], i * 3);
+      }
+      o.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      o.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      g.add(mesh(o, M.bridge));
+    };
+    const bx = (w: number, h: number, d: number) => new THREE.BoxGeometry(w, h, d, 1, Math.max(1, Math.ceil(h / 0.35)), 1);
+    const redBar = (len: number, x: number, y: number, z: number, rz: number) => {
+      const m = mesh(box(len, 0.03, 0.07), M.red);
+      m.position.set(x, y, z);
+      m.rotation.z = rz;
+      g.add(m);
+    };
+
+    // the arch: wedge-shaped voussoirs round a circle through both springings
+    const Ri = 1.83;
+    const Ro = Ri + 0.35;
+    const yc = -0.03;
+    const phi0 = Math.atan2(Math.sqrt(Ri * Ri - SPAN * SPAN), SPAN);
+    const N = 15;
+    for (let i = 0; i < N; i++) {
+      const t1 = phi0 + ((Math.PI - 2 * phi0) * i) / N + 0.002;
+      const t2 = phi0 + ((Math.PI - 2 * phi0) * (i + 1)) / N - 0.002;
+      const sh = new THREE.Shape();
+      sh.moveTo(Ri * Math.cos(t1), yc + Ri * Math.sin(t1));
+      sh.lineTo(Ro * Math.cos(t1), yc + Ro * Math.sin(t1));
+      sh.lineTo(Ro * Math.cos(t2), yc + Ro * Math.sin(t2));
+      sh.lineTo(Ri * Math.cos(t2), yc + Ri * Math.sin(t2));
+      sh.closePath();
+      dress(new THREE.ExtrudeGeometry(sh, { depth: 2 * HW, bevelEnabled: false }), 0, 0, -HW);
+    }
+    // abutments, sunk well below the river bed
+    for (const sg of [-1, 1]) {
+      const bottom = -1.5;
+      dress(bx(ABUT - SPAN + 0.05, 1.8 - bottom, W_ABUT), (sg * (ABUT + SPAN - 0.05)) / 2, (1.8 + bottom) / 2, 0);
+    }
+    // spandrel fill between the arch and the deck, then the deck slab following the hump
+    for (let x = -ABUT + 0.075; x < ABUT; x += 0.15) {
+      let low = 1.75;
+      if (Math.abs(x) <= SPAN) low = yc + Math.sqrt(Ro * Ro - x * x) - 0.03;
+      const high = top(x) - 0.28;
+      if (high - low > 0.02) dress(bx(0.17, high - low, W_FILL), x, (high + low) / 2, 0);
+    }
+    for (let x = -ABUT + 0.15; x < ABUT; x += 0.3) {
+      const slope = (top(x + 0.15) - top(x - 0.15)) / 0.3;
+      dress(bx(0.3 * Math.sqrt(1 + slope * slope) + 0.04, 0.3, W_DECK), x, top(x) - 0.15, 0, Math.atan(slope));
+    }
+    // steps down (or up) to each bank, then a paved landing; every block reaches below the ground under it
+    for (const sg of [-1, 1]) {
+      let ground = gEnd.e;
+      if (sg < 0) ground = gEnd.w;
+      const n = Math.max(1, Math.ceil(Math.abs(ground - Y_END) / 0.2));
+      const tread = (END - ABUT) / n;
+      const block = (x0: number, x1: number, topY: number) => {
+        const low = Math.min(gh(sg * x0, HW), gh(sg * x0, -HW), gh(sg * x1, HW), gh(sg * x1, -HW), gh(sg * (x0 + x1) / 2, 0));
+        const bottom = Math.min(topY, low) - 0.45;
+        dress(bx(x1 - x0, topY - bottom, W_DECK), (sg * (x0 + x1)) / 2, (topY + bottom) / 2, 0);
+      };
+      for (let k = 1; k <= n; k++) block(ABUT + (k - 1) * tread, ABUT + k * tread, Y_END + ((ground - Y_END) * k) / n);
+      block(END, END + 0.9, ground + 0.03);
+    }
+
+    // balustrade: square posts with lotus finials, framed carved panels, a coping with a red lacquered line
+    const posts = [-END, -3.4, -ABUT, -SPAN, -0.9, 0, 0.9, SPAN, ABUT, 3.4, END];
+    for (const z of [-PZ, PZ]) {
+      posts.forEach((x, i) => {
+        const y = top(x);
+        dress(bx(0.26, 0.14, 0.26), x, y + 0.07, z);
+        dress(bx(0.18, 0.78, 0.18), x, y + 0.5, z);
+        dress(new THREE.CylinderGeometry(0.12, 0.1, 0.06, 8), x, y + 0.92, z);
+        if (x === 0) {
+          const lamp = B.lantern();
+          lamp.scale.setScalar(0.6);
+          lamp.position.set(x, y + 0.95, z);
+          g.add(lamp);
+          return;
+        }
+        dress(new THREE.SphereGeometry(0.09, 8, 6), x, y + 1.02, z);
+        dress(new THREE.ConeGeometry(0.04, 0.16, 6), x, y + 1.16, z);
+        if (i === posts.length - 1) return;
+        const x1 = posts[i + 1];
+        const dy = top(x1) - y;
+        const len = Math.hypot(x1 - x, dy);
+        const rz = Math.atan2(dy, x1 - x);
+        const xm = (x + x1) / 2;
+        const ym = (y + top(x1)) / 2;
+        dress(bx(len, 0.14, 0.2), xm, ym + 0.07, z, rz);
+        dress(bx(len - 0.14, 0.4, 0.09), xm, ym + 0.34, z, rz);
+        dress(bx(len, 0.1, 0.24), xm, ym + 0.65, z, rz);
+        redBar(len - 0.2, xm, ym + 0.715, z, rz);
+        if (fine) {
+          dress(bx(len - 0.2, 0.04, 0.12), xm, ym + 0.17, z, rz);
+          dress(bx(len - 0.2, 0.04, 0.12), xm, ym + 0.5, z, rz);
+          dress(bx(0.2, 0.2, 0.05), xm, ym + 0.34, z, rz + Math.PI / 4);
+        }
+      });
+    }
+    // stone lions guarding each end
+    if (fine) {
+      for (const sg of [-1, 1]) {
+        const lions = B.lionPair(PZ);
+        const x = sg * (END + 1.0);
+        lions.position.set(x, gh(x, 0), 0);
+        lions.rotation.y = (sg * Math.PI) / 2;
+        g.add(lions);
+      }
+    }
+    g.traverse((o) => {
+      if ((o as THREE.Mesh).isMesh) {
+        o.castShadow = true;
+        o.receiveShadow = true;
+      }
+    });
+    g.position.set(c.x, 0, c.z);
+    g.rotation.y = th;
+    mergeStatic(g);
+    return g;
   })();
 
   return { ledge, valley, lake, bridge };

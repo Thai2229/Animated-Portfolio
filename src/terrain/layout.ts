@@ -51,5 +51,7 @@ export const PATH_BRANCH: Pt[] = [
   [0.2, 10.4], [2.6, 7.5], [4.2, 3.5], [5.2, 0.2], [SITES.lake.a - 1.2, SITES.lake.b + 3.2],
 ];
 export const PATH_ALL: Pt[] = PATH_MAIN.concat(PATH_BRANCH);
+// the stone bridge over the river below the fall: centre on the river, unit direction (west to east end) along the path, half length
+export const BRIDGE = { a: 1.0, b: 10.95, dirA: 0.972, dirB: 0.236, half: 4.1 };
 // sun direction (unnormalised) from the upper-left of the frame
 export const SUN_DIR = { x: 0.5, y: 0.95, z: -0.45 };
