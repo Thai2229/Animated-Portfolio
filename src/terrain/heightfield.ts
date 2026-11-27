@@ -287,7 +287,7 @@ export function generateHeightfield(opts: HeightfieldOptions) {
       const { a, b } = W2A(wxOf(x), wxOf(y));
       let h = H[i];
       const E = SITES.ledge;
-      const de = Math.hypot(a - E.a, (b - E.b) * 1.3);
+      const de = Math.hypot(a - E.a, b - E.b);
       if (h > E.h || de < E.r + 1) h = lerp(h, E.h, 1 - sstep(E.r, E.r + 2.2, de));
       const dv = Math.hypot(a - V.a, b - V.b);
       h = lerp(h, valleyH, 1 - sstep(V.r, V.r + 3.5, dv));

@@ -8,10 +8,12 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { createValley } from './buildScene';
 import { createStorm, type Storm } from './storm';
 import { createStormFx, treesInView } from './stormFx';
+import { createFlyers } from './swordsmen';
+import { createSwordsmenFx } from './swordsmenFx';
 import { buildSects, makeHitProxy, type SectBuild } from './architecture';
 import { flyPose, type Pose, type Vec3 } from './cameraPath';
 import { HOME, LABEL_UP, sectPose, fovFor, offA } from './poses';
-import { A2W, C, SITES, SUN_DIR, type SiteKey } from '../terrain/layout';
+import { A2W, C, FALL_TOP, SITES, SUN_DIR, type SiteKey } from '../terrain/layout';
 import type { WorldData } from '../terrain/world';
 import type { Profile } from '../terrain/profile';
 import { SECTS } from '../content/sects';
@@ -194,6 +196,34 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
       delete w.__stormState;
     };
   }, [testStorm, fx]);
+  // flying swordsmen loop over the valley and massif, round the sects (outside their hit proxies) and the waterfall;
+  // hidden under reduced motion; ?swords=close parks the camera beside the first flyer
+  const swords = useMemo(() => {
+    const half = world.worldSize / 2;
+    const bounds = { minX: -half, maxX: half, minZ: -half, maxZ: half, maxY: 70 };
+    const proxies = (Object.keys(SITES) as SiteKey[]).map((k) => {
+      const w = A2W(SITES[k].a, SITES[k].b);
+      return { x: w.x, z: w.z, r: SITES[k].r * 1.1, top: world.siteHeights[k] + 6.8 };
+    });
+    const fall = A2W(FALL_TOP.a, FALL_TOP.b);
+    const focus = [A2W(SITES.valley.a, SITES.valley.b), A2W(30, 34), fall, A2W(SITES.lake.a, SITES.lake.b), A2W(-5, 20), A2W(SITES.ledge.a, SITES.ledge.b)];
+    let count = 3;
+    if (profile.name === 'high') count = 6;
+    const flyers = createFlyers(77, count, bounds, { heightAt: valley.heightAt, clearance: 3, proxies, margin: 1.5, focus });
+    return createSwordsmenFx(flyers, !reduced);
+  }, [world, profile, valley, reduced]);
+  // 'close' looks at the first flyer from the front, 'close-back' from behind (hair and sleeves)
+  const closeSwords = useMemo(() => {
+    if (typeof window === 'undefined') return '';
+    return new URLSearchParams(window.location.search).get('swords') ?? '';
+  }, []);
+  useEffect(() => {
+    scene.add(swords.group);
+    return () => {
+      scene.remove(swords.group);
+      swords.dispose();
+    };
+  }, [scene, swords]);
   useEffect(() => {
     scene.add(fx.group);
     return () => {
@@ -205,6 +235,18 @@ export function Scene({ world, profile, hovered, active, mobile, reduced, labelR
   useFrame(({ clock }, dt) => {
     const t = clock.elapsedTime;
     if (!reduced) valley.update(t);
+    if (!reduced) swords.update(t);
+    if (!reduced && closeSwords.startsWith('close')) {
+      // beside the first flyer and ahead of it (or behind it), looking at it
+      const p = swords.position(0);
+      const yaw = swords.heading(0);
+      const sy = Math.sin(yaw);
+      const cy = Math.cos(yaw);
+      let ahead = 3.2;
+      if (closeSwords === 'close-back') ahead = -3.6;
+      cur.current = { position: [p.x + 2.6 * cy + ahead * sy, p.y + 1.1, p.z - 2.6 * sy + ahead * cy], target: [p.x, p.y + 0.8, p.z] };
+      anim.current = null;
+    }
 
     const w = window as unknown as { __stormFreeze?: boolean; __stormState?: unknown };
     let sdt = Math.min(dt, 0.25);
