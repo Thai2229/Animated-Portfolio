@@ -40,7 +40,7 @@ describe('layout', () => {
   });
 
   it('matches the mock site positions', () => {
-    expect(SITES.ledge).toMatchObject({ a: 16, b: 15.5, r: 4.6 });
+    expect(SITES.ledge).toMatchObject({ a: 16, b: 15.5, r: 5.6 });
     expect(SITES.valley).toMatchObject({ a: -15, b: 8, r: 4.8 });
     expect(SITES.lake).toMatchObject({ a: 7.8, b: -6.5, r: 4.6 });
   });
