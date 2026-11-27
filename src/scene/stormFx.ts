@@ -3,7 +3,8 @@ import * as THREE from 'three';
 import { A2W } from '../terrain/layout';
 import type { WorldData } from '../terrain/world';
 import type { Profile } from '../terrain/profile';
-import { boltPath, burn, type StormState, type Vec3 } from './storm';
+import { boltPath, type StormState, type Vec3 } from './storm';
+import { DEFAULT_MAX_FIRES, type Fires } from './fires';
 
 const CLOUD_Y = 26;
 export const BOLT_SECONDS = 0.25;
@@ -125,13 +126,14 @@ export function createRibbon(group: THREE.Group, color: string, wScale: number, 
 
 export type StormFx = {
   group: THREE.Group;
-  update: (s: StormState, t: number, px: number) => void;
+  // dt advances the shared fires (the storm's struck tree and click strikes); the caller applies any debug skip to it
+  update: (s: StormState, t: number, px: number, dt: number) => void;
   dispose: () => void;
   // world position of the burning tree top, for the debug hook
   treeTop: THREE.Vector3;
 };
 
-export function createStormFx(world: WorldData, profile: Profile, crown: THREE.InstancedMesh): StormFx {
+export function createStormFx(world: WorldData, profile: Profile, crown: THREE.InstancedMesh, fires: Fires): StormFx {
   const group = new THREE.Group();
   const low = profile.name === 'low';
   const third = 1 / (1 + 2 * Number(low));
@@ -186,60 +188,85 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     for (const r of bolts) r.commit();
   };
 
-  // fire: three Points clouds driven entirely by uniforms (no per-frame allocation)
-  const uniforms = {
-    uTime: { value: 0 }, uBurn: { value: 0 }, uPx: { value: 1 },
-    uOrigin: { value: new THREE.Vector3() }, uScale: { value: 0.4 },
-  };
-  const pointSets: THREE.Points[] = [];
-  const particles = (n: number, speed: string, body: string, color: string, additive: boolean) => {
+  // fire: a pool of DEFAULT_MAX_FIRES slots, each three Points clouds driven entirely by uniforms (see the note on update).
+  // The geometries are shared; every slot has its own uniforms.
+  const makeGeo = (n: number) => {
     const g = new THREE.BufferGeometry();
     const a = new Float32Array(n * 4);
     for (let i = 0; i < a.length; i++) a[i] = rnd();
     g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3));
     g.setAttribute('aRnd', new THREE.BufferAttribute(a, 4));
-    let blending: THREE.Blending = THREE.NormalBlending;
-    if (additive) blending = THREE.AdditiveBlending;
-    const m = new THREE.ShaderMaterial({
-      uniforms,
-      vertexShader: PARTICLE_VERT.replace('SPEED', speed).replace('KIND_BODY', body),
-      fragmentShader: FRAG.replace('COLOR_BODY', color),
-      transparent: true, depthWrite: false, blending, toneMapped: false,
-    });
-    const pts = new THREE.Points(g, m);
-    pts.frustumCulled = false;
-    pts.visible = false;
-    group.add(pts);
-    pointSets.push(pts);
-    return pts;
+    return g;
   };
-  const fire = [
-    particles(Math.round(130 * third), '1.1', FLAME_BODY, FLAME_COLOR, true),
-    particles(Math.round(70 * third), '0.6', SPARK_BODY, SPARK_COLOR, true),
-    particles(Math.round(70 * third), '0.13', SMOKE_BODY, SMOKE_COLOR, false),
+  const kinds = [
+    { geo: makeGeo(Math.round(130 * third)), speed: '1.1', body: FLAME_BODY, color: FLAME_COLOR, additive: true },
+    { geo: makeGeo(Math.round(70 * third)), speed: '0.6', body: SPARK_BODY, color: SPARK_COLOR, additive: true },
+    { geo: makeGeo(Math.round(70 * third)), speed: '0.13', body: SMOKE_BODY, color: SMOKE_COLOR, additive: false },
   ];
-  // one reused light, always in the scene (toggling lights would recompile every material); never casts shadows
-  const light = new THREE.PointLight('#ff8a3a', 0, 16, 2);
-  group.add(light);
+  const slots: { uniforms: Record<string, { value: number | THREE.Vector3 }>; sets: THREE.Points[]; tree: number; orig: THREE.Color; level: number }[] = [];
+  for (let i = 0; i < DEFAULT_MAX_FIRES; i++) {
+    const uniforms = {
+      uTime: { value: 0 }, uBurn: { value: 0 }, uPx: { value: 1 },
+      uOrigin: { value: new THREE.Vector3() }, uScale: { value: 0.4 },
+    };
+    const sets = kinds.map((k) => {
+      let blending: THREE.Blending = THREE.NormalBlending;
+      if (k.additive) blending = THREE.AdditiveBlending;
+      const m = new THREE.ShaderMaterial({
+        uniforms,
+        vertexShader: PARTICLE_VERT.replace('SPEED', k.speed).replace('KIND_BODY', k.body),
+        fragmentShader: FRAG.replace('COLOR_BODY', k.color),
+        transparent: true, depthWrite: false, blending, toneMapped: false,
+      });
+      const pts = new THREE.Points(k.geo, m);
+      pts.frustumCulled = false;
+      pts.visible = false;
+      group.add(pts);
+      return pts;
+    });
+    slots.push({ uniforms, sets, tree: -1, orig: new THREE.Color(), level: 0 });
+  }
+  // a few shared lights, always in the scene (toggling lights would recompile every material), never casting shadows;
+  // they follow the brightest fires and the rest rely on the flames' own glow
+  let lightCount = 3;
+  if (low) lightCount = 1;
+  const lights: THREE.PointLight[] = [];
+  for (let i = 0; i < lightCount; i++) {
+    const light = new THREE.PointLight('#ff8a3a', 0, 16, 2);
+    group.add(light);
+    lights.push(light);
+  }
 
   // per-strike state
   const treeTop = new THREE.Vector3();
-  const orig = new THREE.Color();
   const tmp = new THREE.Color();
   let tree = -1;
   let lastAge = Infinity;
   let strikes = 0;
-  let charWritten = 1;
-  const writeChar = (i: number, c: number) => {
+  const lit = new Array<boolean>(DEFAULT_MAX_FIRES).fill(false);
+  const writeChar = (i: number, orig: THREE.Color, c: number) => {
     const ic = crown.instanceColor!;
     tmp.copy(orig).lerp(CHARCOAL, c);
     ic.setXYZ(i, tmp.r, tmp.g, tmp.b);
     ic.addUpdateRange(i * 3, 3);
     ic.needsUpdate = true;
-    charWritten = c;
+  };
+  const slotOf = (treeIndex: number) => {
+    for (let i = 0; i < slots.length; i++) {
+      if (slots[i].tree === treeIndex) return slots[i];
+    }
+    return null;
+  };
+  const freeSlot = () => {
+    for (let i = 0; i < slots.length; i++) {
+      if (slots[i].tree < 0) return slots[i];
+    }
+    return null;
   };
 
-  const update = (s: StormState, t: number, px: number) => {
+  // the fire part of the frame loop builds no closures or temporary arrays: plain loops over preallocated slots and lights,
+  // and the array fires.step returns is reused; objects are only created when a strike starts
+  const update = (s: StormState, t: number, px: number, dt: number) => {
     // clouds
     const c = s.cloud;
     for (const cl of clouds) {
@@ -253,56 +280,94 @@ export function createStormFx(world: WorldData, profile: Profile, crown: THREE.I
     const st = s.strike;
     if (st === null) {
       for (const r of bolts) r.mesh.visible = false;
-      light.intensity = 0;
-      for (const p of fire) p.visible = false;
       lastAge = Infinity;
-      return;
     }
-    if (st.treeIndex !== tree || st.age < lastAge) {
-      // a new strike: locate the tree top, build the bolt, remember the original colour (earlier trees stay charred)
-      tree = st.treeIndex;
-      const m = world.treeMatrices;
-      const o = tree * 16;
-      treeTop.set(m[o + 12], m[o + 13] + 1.05 * m[o + 5], m[o + 14]);
-      uniforms.uOrigin.value.copy(treeTop);
-      uniforms.uScale.value = m[o + 5];
-      crown.getColorAt(tree, orig);
-      charWritten = 0;
-      strikes++;
-      strikeBolt(tree * 31 + strikes, treeTop);
-    }
-    lastAge = st.age;
-
-    const on = st.age < BOLT_SECONDS;
-    for (const r of bolts) r.mesh.visible = on;
-    if (on) {
-      const k = 1 - st.age / BOLT_SECONDS;
-      core.mat.opacity = k;
-      glow.mat.opacity = k * 0.3;
+    if (st !== null) {
+      if (st.treeIndex !== tree || st.age < lastAge) {
+        // a new strike: locate the tree top, build the bolt and light the tree (refused when 6 fires already burn)
+        tree = st.treeIndex;
+        const tm = world.treeMatrices;
+        const o = tree * 16;
+        treeTop.set(tm[o + 12], tm[o + 13] + 1.05 * tm[o + 5], tm[o + 14]);
+        strikes++;
+        strikeBolt(tree * 31 + strikes, treeTop);
+        fires.ignite(tree);
+      }
+      lastAge = st.age;
+      const on = st.age < BOLT_SECONDS;
+      for (const r of bolts) r.mesh.visible = on;
+      if (on) {
+        const k = 1 - st.age / BOLT_SECONDS;
+        core.mat.opacity = k;
+        glow.mat.opacity = k * 0.3;
+      }
     }
 
-    const b = burn(st.age);
-    uniforms.uTime.value = t;
-    uniforms.uBurn.value = b;
-    uniforms.uPx.value = px;
-    for (const p of fire) p.visible = b > 0;
-    // slow flicker (about 1.4 Hz, no strobing), scaled by burn
-    light.position.copy(treeTop);
-    light.intensity = b * (14 + 4 * Math.sin(t * 9));
-
-    const ch = Math.min(1, st.age / CHAR_SECONDS);
-    if (ch !== charWritten) writeChar(tree, ch);
+    // every active fire (storm or click) gets a slot; a tree whose fire ended is charred for good. The fires are
+    // registered before stepping, so one that starts and ends inside a single big step (debug seek) still chars.
+    const m = world.treeMatrices;
+    const started = fires.step(0);
+    for (let i = 0; i < started.length; i++) {
+      const free = freeSlot();
+      if (slotOf(started[i].treeIndex) !== null || free === null) continue;
+      const o = started[i].treeIndex * 16;
+      free.tree = started[i].treeIndex;
+      free.level = 0;
+      (free.uniforms.uOrigin.value as THREE.Vector3).set(m[o + 12], m[o + 13] + 1.05 * m[o + 5], m[o + 14]);
+      free.uniforms.uScale.value = m[o + 5];
+      crown.getColorAt(free.tree, free.orig);
+    }
+    const active = fires.step(dt);
+    for (let i = 0; i < slots.length; i++) {
+      const sl = slots[i];
+      let a = null;
+      for (let j = 0; j < active.length; j++) {
+        if (active[j].treeIndex === sl.tree) a = active[j];
+      }
+      let b = 0;
+      if (a === null && sl.tree >= 0) {
+        writeChar(sl.tree, sl.orig, 1);
+        sl.tree = -1;
+      }
+      if (a !== null) {
+        b = a.burn;
+        // existing storm look: charred over the first CHAR_SECONDS
+        const ch = Math.min(1, a.age / CHAR_SECONDS);
+        if (ch !== sl.level) {
+          sl.level = ch;
+          writeChar(sl.tree, sl.orig, ch);
+        }
+      }
+      sl.uniforms.uTime.value = t;
+      sl.uniforms.uBurn.value = b;
+      sl.uniforms.uPx.value = px;
+      for (let j = 0; j < sl.sets.length; j++) sl.sets[j].visible = b > 0;
+    }
+    // the lights follow the brightest fires; slow flicker (about 1.4 Hz, no strobing), scaled by burn
+    for (let j = 0; j < active.length; j++) lit[j] = false;
+    for (let i = 0; i < lights.length; i++) {
+      let pick = -1;
+      for (let j = 0; j < active.length; j++) {
+        if (!lit[j] && (pick < 0 || active[j].burn > active[pick].burn)) pick = j;
+      }
+      if (pick < 0) {
+        lights[i].intensity = 0;
+        continue;
+      }
+      lit[pick] = true;
+      const o = active[pick].treeIndex * 16;
+      lights[i].position.set(m[o + 12], m[o + 13] + 1.05 * m[o + 5], m[o + 14]);
+      lights[i].intensity = active[pick].burn * (14 + 4 * Math.sin(t * 9));
+    }
   };
 
   const dispose = () => {
     ct.dispose();
     for (const cl of clouds) cl.s.material.dispose();
     for (const r of bolts) r.dispose();
-    for (const p of pointSets) {
-      p.geometry.dispose();
-      (p.material as THREE.Material).dispose();
-    }
-    light.dispose();
+    for (const k of kinds) k.geo.dispose();
+    for (const sl of slots) for (const p of sl.sets) (p.material as THREE.Material).dispose();
+    for (const l of lights) l.dispose();
   };
 
   return { group, update, dispose, treeTop };

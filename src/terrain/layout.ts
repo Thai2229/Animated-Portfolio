@@ -13,8 +13,8 @@ export type Pt = [number, number];
 export const RIDGE: Pt[] = [[-14, 48], [-2, 40], [10, 33], [22, 26], [34, 20], [48, 16]];
 export const SITES = {
   ledge: { a: 16, b: 15.5, r: 5.6, h: 13.5 },
-  valley: { a: -15, b: 8, r: 4.8, h: 0 },
-  lake: { a: 7.8, b: -6.5, r: 4.6, h: 4.5 },
+  valley: { a: -15, b: 8, r: 5.5, h: 0 },
+  lake: { a: 7.8, b: -6.5, r: 5.6, h: 4.5 },
 };
 export type SiteKey = keyof typeof SITES;
 export const LAKE = { a: -1, b: -9, r: 7.5 };
@@ -51,5 +51,7 @@ export const PATH_BRANCH: Pt[] = [
   [0.2, 10.4], [2.6, 7.5], [4.2, 3.5], [5.2, 0.2], [SITES.lake.a - 1.2, SITES.lake.b + 3.2],
 ];
 export const PATH_ALL: Pt[] = PATH_MAIN.concat(PATH_BRANCH);
+// the stone bridge over the river below the fall: centre on the river, unit direction (west to east end) along the path, half length
+export const BRIDGE = { a: 1.0, b: 10.95, dirA: 0.972, dirB: 0.236, half: 4.1 };
 // sun direction (unnormalised) from the upper-left of the frame
 export const SUN_DIR = { x: 0.5, y: 0.95, z: -0.45 };
